@@ -1,7 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { aws_ec2 as ec2, aws_iam as iam, aws_logs as logs, aws_stepfunctions as stepfunctions } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
-import { BaseProvider, IRunnerProvider, IRunnerProviderStatus, RunnerProviderProps, RunnerRuntimeParameters, StorageOptions } from './common';
+import { BaseProvider, IRunnerProvider, IRunnerProviderStatus, IRunnerRuntimeParameters, RunnerProviderProps, StorageOptions } from './common';
 import { IRunnerImageBuilder, RunnerImageBuilderProps } from '../image-builders';
 /**
  * Properties for {@link Ec2RunnerProvider} construct.
@@ -44,6 +44,11 @@ export interface Ec2RunnerProviderProps extends RunnerProviderProps {
     readonly group?: string;
     /**
      * Instance type for launched runner instances.
+     *
+     * For GPU instance types (g4dn, g5, p3, etc.), we automatically use a GPU base image (AWS Deep Learning AMI)
+     * with NVIDIA drivers pre-installed. If you provide your own image builder, use
+     * `baseAmi: BaseImage.fromGpuBase(os, architecture)` or another image preloaded with NVIDIA drivers, or use
+     * an image component to install NVIDIA drivers.
      *
      * @default m6i.large
      */
@@ -104,6 +109,18 @@ export interface Ec2RunnerProviderProps extends RunnerProviderProps {
      * @default no max price (you will pay current spot price)
      */
     readonly spotMaxPrice?: string;
+    /**
+     * Maximum time the Step Functions task waits between EC2 heartbeats before
+     * falling back to the next subnet / failing the task.
+     *
+     * If your job runs longer than 10 minutes you must raise this — the previous
+     * hardcoded 10-minute default caused false "stuck" detections for any job
+     * that took longer to complete than the heartbeat interval (e.g. LocalStack
+     * snapshot deploys, integration tests with large fixture setup, etc.).
+     *
+     * @default cdk.Duration.minutes(10)
+     */
+    readonly heartbeatTimeout?: cdk.Duration;
 }
 /**
  * GitHub Actions runner provider using EC2 to execute jobs.
@@ -155,11 +172,14 @@ export declare class Ec2RunnerProvider extends BaseProvider implements IRunnerPr
     private readonly storageOptions?;
     private readonly spot;
     private readonly spotMaxPrice;
+    private readonly heartbeatTimeout;
     private readonly vpc;
     private readonly subnets;
     private readonly securityGroups;
     private readonly defaultLabels;
     constructor(scope: Construct, id: string, props?: Ec2RunnerProviderProps);
+    private userDataConst;
+    stepFunctionConstants(): Record<string, string>;
     /**
      * Generate step function task(s) to start a new runner.
      *
@@ -167,7 +187,7 @@ export declare class Ec2RunnerProvider extends BaseProvider implements IRunnerPr
      *
      * @param parameters workflow job details
      */
-    getStepFunctionTask(parameters: RunnerRuntimeParameters): stepfunctions.IChainable;
+    getStepFunctionTask(parameters: IRunnerRuntimeParameters): stepfunctions.IChainable;
     grantStateMachine(stateMachineRole: iam.IGrantable): void;
     status(statusFunctionRole: iam.IGrantable): IRunnerProviderStatus;
     /**

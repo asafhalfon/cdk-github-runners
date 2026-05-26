@@ -1,5 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
-import { aws_cloudwatch as cloudwatch, aws_ec2 as ec2, aws_lambda as lambda, aws_logs as logs, aws_stepfunctions as stepfunctions } from 'aws-cdk-lib';
+import { aws_cloudwatch as cloudwatch, aws_ec2 as ec2, aws_lambda as lambda, aws_logs as logs, aws_sqs as sqs, aws_stepfunctions as stepfunctions } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import { LambdaAccess } from './access';
 import { ICompositeProvider, IRunnerProvider, ProviderRetryOptions } from './providers';
@@ -152,7 +152,9 @@ export interface GitHubRunnersProps {
      *
      * **WARNING: Provider selection is not a guarantee that a specific provider will be assigned for the job. GitHub Actions may assign the job to any runner with matching labels. The provider selector only determines which provider's runner will be *created*, but GitHub Actions may route the job to any available runner with the required labels.**
      *
-     * **For reliable provider assignment based on job characteristics, consider using repo-level runner registration where you can control which runners are available for specific repositories. See {@link SETUP_GITHUB.md} for more details on the different registration levels. This information is also available while using the setup wizard.
+     * **For reliable provider assignment based on job characteristics, consider using repo-level runner registration where you can control which runners are available for specific repositories. This information is also available while using the setup wizard.
+     *
+     * @see https://github.com/CloudSnorkel/cdk-github-runners/blob/main/SETUP_GITHUB.md
      */
     readonly providerSelector?: lambda.IFunction;
 }
@@ -249,10 +251,16 @@ export declare class GitHubRunners extends Construct implements ec2.IConnectable
     private readonly extraLambdaProps;
     private stateMachineLogGroup?;
     private jobsCompletedMetricFiltersInitialized;
+    private warmRunnerManager?;
+    private warmRunnerQueue?;
+    private warmConfigHashes;
+    private deleteFailedRunnerIndex;
+    private deleteFailedRunnerFunction?;
     constructor(scope: Construct, id: string, props?: GitHubRunnersProps | undefined);
     private stateMachine;
     private tokenRetriever;
     private deleteFailedRunner;
+    private addCatchAndCleanUp;
     private statusFunction;
     private setupFunction;
     private checkIntersectingLabels;
@@ -315,6 +323,26 @@ export declare class GitHubRunners extends Construct implements ec2.IConnectable
      * * "Ignored webhook" helps understand why runners aren't started
      * * "Ignored jobs based on labels" helps debug label matching issues
      * * "Webhook started runners" helps understand which runners were started
+     * * "Warm runner status" and "Warm runner errors" (when warm runners are configured)
+     *
+     * @param prefix Prefix for the query definitions. Defaults to "GitHub Runners".
      */
-    createLogsInsightsQueries(): void;
+    createLogsInsightsQueries(prefix?: string): void;
+    /**
+     * Register a warm runner config hash. All registered hashes are passed to the
+     * manager Lambda via WARM_CONFIG_HASHES env var so keepers can detect stale configs.
+     *
+     * @internal
+     */
+    _registerWarmConfigHash(hash: string): void;
+    /**
+     * Lazily create shared warm runner infrastructure (Lambda, SQS queue).
+     * Returns the manager Lambda and queue for use as EventBridge targets.
+     *
+     * @internal
+     */
+    _ensureWarmRunnerInfra(): {
+        lambda: lambda.Function;
+        queue: sqs.Queue;
+    };
 }

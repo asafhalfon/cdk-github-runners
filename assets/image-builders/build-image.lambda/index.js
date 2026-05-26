@@ -105,7 +105,7 @@ async function handler(event, context) {
   } catch (e) {
     console.error({
       notice: "Failed to start CodeBuild project",
-      error: `${e}`
+      error: e
     });
     await customResourceRespond(event, "FAILED", e.message || "Internal Error", context.logStreamName, {});
   }

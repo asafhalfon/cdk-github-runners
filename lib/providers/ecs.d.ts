@@ -1,7 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { aws_ec2 as ec2, aws_ecs as ecs, aws_iam as iam, aws_logs as logs, aws_stepfunctions as stepfunctions } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
-import { BaseProvider, IRunnerProvider, IRunnerProviderStatus, RunnerProviderProps, RunnerRuntimeParameters, StorageOptions } from './common';
+import { BaseProvider, IRunnerProvider, IRunnerProviderStatus, IRunnerRuntimeParameters, RunnerProviderProps, StorageOptions } from './common';
 import { IRunnerImageBuilder, RunnerImageBuilderProps } from '../image-builders';
 /**
  * Properties for EcsRunnerProvider.
@@ -159,6 +159,19 @@ export interface EcsRunnerProviderProps extends RunnerProviderProps {
      * @default undefined (no placement constraints)
      */
     readonly placementConstraints?: ecs.PlacementConstraint[];
+    /**
+     * Number of GPUs to request for the runner task. When set, the task will be scheduled on GPU-capable instances.
+     *
+     * Requires a GPU-capable instance type (e.g., g4dn.xlarge for 1 GPU, g4dn.12xlarge for 4 GPUs) and GPU AMI.
+     * When creating a new cluster, instanceType defaults to g4dn.xlarge and the ECS Optimized GPU AMI is used.
+     *
+     * You must ensure that the task's container image includes the CUDA runtime. Provide a CUDA-enabled base image
+     * via `baseDockerImage`, use an image builder that starts from a GPU-capable image (such as nvidia/cuda), or add
+     * an image component that installs the CUDA runtime into the image.
+     *
+     * @default undefined (no GPU)
+     */
+    readonly gpu?: number;
 }
 /**
  * GitHub Actions runner provider using ECS on EC2 to execute jobs.
@@ -265,6 +278,10 @@ export declare class EcsRunnerProvider extends BaseProvider implements IRunnerPr
      * ECS placement constraints to influence task placement.
      */
     private readonly placementConstraints?;
+    /**
+     * Number of GPUs requested for the runner task (0 = no GPU).
+     */
+    private readonly gpuCount;
     readonly retryableErrors: string[];
     constructor(scope: Construct, id: string, props?: EcsRunnerProviderProps);
     private defaultClusterInstanceType;
@@ -279,7 +296,7 @@ export declare class EcsRunnerProvider extends BaseProvider implements IRunnerPr
      *
      * @param parameters workflow job details
      */
-    getStepFunctionTask(parameters: RunnerRuntimeParameters): stepfunctions.IChainable;
+    getStepFunctionTask(parameters: IRunnerRuntimeParameters): stepfunctions.IChainable;
     grantStateMachine(_: iam.IGrantable): void;
     status(statusFunctionRole: iam.IGrantable): IRunnerProviderStatus;
 }

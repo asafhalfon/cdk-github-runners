@@ -1,6 +1,6 @@
 import { aws_ec2 as ec2, aws_ecs as ecs, aws_iam as iam, aws_logs as logs, aws_stepfunctions as stepfunctions } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
-import { BaseProvider, IRunnerProvider, IRunnerProviderStatus, Os, RunnerImage, RunnerProviderProps, RunnerRuntimeParameters } from './common';
+import { BaseProvider, IRunnerProvider, IRunnerProviderStatus, IRunnerRuntimeParameters, Os, RunnerImage, RunnerProviderProps } from './common';
 import { IRunnerImageBuilder, RunnerImageBuilderProps } from '../image-builders';
 /**
  * Properties for FargateRunnerProvider.
@@ -263,7 +263,7 @@ export declare class FargateRunnerProvider extends BaseProvider implements IRunn
      *
      * @param parameters workflow job details
      */
-    getStepFunctionTask(parameters: RunnerRuntimeParameters): stepfunctions.IChainable;
+    getStepFunctionTask(parameters: IRunnerRuntimeParameters): stepfunctions.IChainable;
     grantStateMachine(_: iam.IGrantable): void;
     status(statusFunctionRole: iam.IGrantable): IRunnerProviderStatus;
 }

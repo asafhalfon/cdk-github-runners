@@ -1,6 +1,6 @@
 import { aws_codebuild as codebuild, aws_ec2 as ec2, aws_iam as iam, aws_logs as logs, aws_stepfunctions as stepfunctions, Duration } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
-import { BaseProvider, IRunnerProvider, IRunnerProviderStatus, RunnerImage, RunnerProviderProps, RunnerRuntimeParameters } from './common';
+import { BaseProvider, IRunnerProvider, IRunnerProviderStatus, IRunnerRuntimeParameters, RunnerImage, RunnerProviderProps } from './common';
 import { IRunnerImageBuilder, RunnerImageBuilderProps } from '../image-builders';
 export interface CodeBuildRunnerProviderProps extends RunnerProviderProps {
     /**
@@ -101,6 +101,22 @@ export interface CodeBuildRunnerProviderProps extends RunnerProviderProps {
      * @default true
      */
     readonly dockerInDocker?: boolean;
+    /**
+     * Use GPU compute for builds. When enabled, the default compute type is BUILD_GENERAL1_SMALL (4 vCPU, 16 GB RAM, 1 NVIDIA A10G GPU).
+     *
+     * You can override the compute type using the `computeType` property (for example, to use BUILD_GENERAL1_LARGE for more resources),
+     * subject to the supported GPU compute types.
+     *
+     * When using GPU compute, ensure your runner image includes any required GPU libraries (for example, CUDA)
+     * either by using a base image that has them preinstalled (such as an appropriate nvidia/cuda image) or by
+     * adding image components that install them. The default image builder does not automatically switch to a
+     * CUDA-enabled base image when GPU is enabled.
+     *
+     * GPU compute is only available for Linux x64 images. Not supported on Windows or ARM.
+     *
+     * @default false
+     */
+    readonly gpu?: boolean;
 }
 /**
  * GitHub Actions runner provider using CodeBuild to execute jobs.
@@ -195,7 +211,7 @@ export declare class CodeBuildRunnerProvider extends BaseProvider implements IRu
      *
      * @param parameters workflow job details
      */
-    getStepFunctionTask(parameters: RunnerRuntimeParameters): stepfunctions.IChainable;
+    getStepFunctionTask(parameters: IRunnerRuntimeParameters): stepfunctions.IChainable;
     grantStateMachine(_: iam.IGrantable): void;
     status(statusFunctionRole: iam.IGrantable): IRunnerProviderStatus;
     /**

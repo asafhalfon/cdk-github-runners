@@ -1,7 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { aws_ec2 as ec2, aws_iam as iam, aws_lambda as lambda, aws_logs as logs, aws_stepfunctions as stepfunctions } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
-import { BaseProvider, IRunnerProvider, IRunnerProviderStatus, RunnerImage, RunnerProviderProps, RunnerRuntimeParameters } from './common';
+import { BaseProvider, IRunnerProvider, IRunnerProviderStatus, IRunnerRuntimeParameters, RunnerImage, RunnerProviderProps } from './common';
 import { IRunnerImageBuilder, RunnerImageBuilderProps } from '../image-builders';
 export interface LambdaRunnerProviderProps extends RunnerProviderProps {
     /**
@@ -182,7 +182,7 @@ export declare class LambdaRunnerProvider extends BaseProvider implements IRunne
      *
      * @param parameters workflow job details
      */
-    getStepFunctionTask(parameters: RunnerRuntimeParameters): stepfunctions.IChainable;
+    getStepFunctionTask(parameters: IRunnerRuntimeParameters): stepfunctions.IChainable;
     private addImageUpdater;
     grantStateMachine(_: iam.IGrantable): void;
     status(statusFunctionRole: iam.IGrantable): IRunnerProviderStatus;

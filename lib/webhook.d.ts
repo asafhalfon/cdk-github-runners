@@ -82,6 +82,10 @@ export interface GithubWebhookHandlerProps {
      */
     readonly requireSelfHostedLabel: boolean;
     /**
+     * Idle timeout for runners in seconds.
+     */
+    readonly idleTimeoutSeconds?: number;
+    /**
      * Additional Lambda function options (VPC, security groups, layers, etc.).
      */
     readonly extraLambdaProps?: lambda.FunctionOptions;

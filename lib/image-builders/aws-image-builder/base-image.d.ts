@@ -1,6 +1,7 @@
 import * as ecr from 'aws-cdk-lib/aws-ecr';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
+import { Architecture, Os } from '../../providers';
 /**
  * Type that can be used to specify a base image - either a string (deprecated) or a BaseImage object.
  *
@@ -56,6 +57,18 @@ export declare class BaseImage {
      * @param baseImageString The base image as a direct string value
      */
     static fromString(baseImageString: string): BaseImage;
+    /**
+     * A base AMI with NVIDIA drivers pre-installed for GPU workloads.
+     *
+     * Uses AWS Deep Learning AMIs for Linux (Ubuntu, Amazon Linux 2, Amazon Linux 2023).
+     * For Windows, subscribe to NVIDIA RTX Virtual Workstation in AWS Marketplace, then use
+     * {@link fromMarketplaceProductId} with the product ID.
+     *
+     * @param os Target operating system
+     * @param architecture Target architecture
+     * @throws Error if the OS/architecture combo has no GPU base AMI
+     */
+    static fromGpuBase(os: Os, architecture: Architecture): BaseImage;
     /**
      * The rendered base image to use
      */

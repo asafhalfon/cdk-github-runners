@@ -197,7 +197,7 @@ async function handler(event, _context) {
   } catch (e) {
     console.error({
       notice: "Failed to delete Image Builder resources",
-      error: `${e}`
+      error: e
     });
     await customResourceRespond(event, "FAILED", e.message || "Internal Error", "FAIL", {});
   }

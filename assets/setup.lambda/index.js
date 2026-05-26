@@ -596,7 +596,7 @@ var require_fast_content_type_parse = __commonJS({
 });
 
 // node_modules/json-with-bigint/json-with-bigint.js
-var intRegex, noiseValue, originalStringify, originalParse, customFormat, bigIntsStringify, noiseStringify, JSONStringify, isContextSourceSupported, convertMarkedBigIntsReviver, JSONParseV2, MAX_INT, MAX_DIGITS, stringsOrLargeNumbers, noiseValueWithQuotes, JSONParse;
+var intRegex, noiseValue, originalStringify, originalParse, customFormat, bigIntsStringify, noiseStringify, JSONStringify, featureCache, isContextSourceSupported, convertMarkedBigIntsReviver, JSONParseV2, MAX_INT, MAX_DIGITS, stringsOrLargeNumbers, noiseValueWithQuotes, JSONParse;
 var init_json_with_bigint = __esm({
   "node_modules/json-with-bigint/json-with-bigint.js"() {
     "use strict";
@@ -624,7 +624,7 @@ var init_json_with_bigint = __esm({
       const convertedToCustomJSON = originalStringify(
         value,
         (key, value2) => {
-          const isNoise = typeof value2 === "string" && Boolean(value2.match(noiseValue));
+          const isNoise = typeof value2 === "string" && noiseValue.test(value2);
           if (isNoise) return value2.toString() + "n";
           if (typeof value2 === "bigint") return value2.toString() + "n";
           if (typeof replacer === "function") return replacer(key, value2);
@@ -640,11 +640,28 @@ var init_json_with_bigint = __esm({
       const denoisedJSON = processedJSON.replace(noiseStringify, "$1$2$3");
       return denoisedJSON;
     };
-    isContextSourceSupported = () => JSON.parse("1", (_, __, context) => !!context && context.source === "1");
+    featureCache = /* @__PURE__ */ new Map();
+    isContextSourceSupported = () => {
+      const parseFingerprint = JSON.parse.toString();
+      if (featureCache.has(parseFingerprint)) {
+        return featureCache.get(parseFingerprint);
+      }
+      try {
+        const result = JSON.parse(
+          "1",
+          (_, __, context) => !!context?.source && context.source === "1"
+        );
+        featureCache.set(parseFingerprint, result);
+        return result;
+      } catch {
+        featureCache.set(parseFingerprint, false);
+        return false;
+      }
+    };
     convertMarkedBigIntsReviver = (key, value, context, userReviver) => {
-      const isCustomFormatBigInt = typeof value === "string" && value.match(customFormat);
+      const isCustomFormatBigInt = typeof value === "string" && customFormat.test(value);
       if (isCustomFormatBigInt) return BigInt(value.slice(0, -1));
-      const isNoiseValue = typeof value === "string" && value.match(noiseValue);
+      const isNoiseValue = typeof value === "string" && noiseValue.test(value);
       if (isNoiseValue) return value.slice(0, -1);
       if (typeof userReviver !== "function") return value;
       return userReviver(key, value, context);
@@ -670,7 +687,7 @@ var init_json_with_bigint = __esm({
         stringsOrLargeNumbers,
         (text2, digits, fractional, exponential) => {
           const isString = text2[0] === '"';
-          const isNoise = isString && Boolean(text2.match(noiseValueWithQuotes));
+          const isNoise = isString && noiseValueWithQuotes.test(text2);
           if (isNoise) return text2.substring(0, text2.length - 1) + 'n"';
           const isFractionalOrExponential = fractional || exponential;
           const isLessThanMaxSafeInt = digits && (digits.length < MAX_DIGITS || digits.length === MAX_DIGITS && digits <= MAX_INT);
@@ -3909,11 +3926,11 @@ var import_client_secrets_manager = require("@aws-sdk/client-secrets-manager");
 var sm = new import_client_secrets_manager.SecretsManagerClient();
 async function getSecretValue(arn) {
   if (!arn) {
-    throw new Error("Missing secret ARN");
+    throw new Error("Missing secret ARN. Check the Lambda configuration and required environment variables.");
   }
   const secret = await sm.send(new import_client_secrets_manager.GetSecretValueCommand({ SecretId: arn }));
   if (!secret.SecretString) {
-    throw new Error(`No SecretString in ${arn}`);
+    throw new Error("Secrets Manager getSecretValue returned no SecretString. This often indicates that the secret was stored as binary data (SecretBinary) instead of a string. Ensure the secret is stored in SecretString or update the code to handle SecretBinary.");
   }
   return secret.SecretString;
 }
@@ -3922,7 +3939,7 @@ async function getSecretJsonValue(arn) {
 }
 async function updateSecretValue(arn, value) {
   if (!arn) {
-    throw new Error("Missing secret ARN");
+    throw new Error("Missing secret ARN. Check the Lambda configuration and required environment variables.");
   }
   await sm.send(new import_client_secrets_manager.UpdateSecretCommand({ SecretId: arn, SecretString: value }));
 }
@@ -4070,7 +4087,7 @@ async function handler2(event) {
   } catch (e) {
     console.error({
       notice: "Setup handler failed",
-      error: `${e}`
+      error: e
     });
     return response(500, `<b>Error:</b> ${e}`);
   }

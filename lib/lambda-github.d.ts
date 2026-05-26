@@ -17,9 +17,7 @@ export declare function getOctokit(installationId?: number): Promise<{
     octokit: RestOctokit;
     githubSecrets: GitHubSecrets;
 }>;
-export declare function getAppOctokit(): Promise<(import("@octokit/core").Octokit & import("@octokit/plugin-rest-endpoint-methods/dist-types/generated/method-types").RestEndpointMethods & import("@octokit/plugin-rest-endpoint-methods").Api & {
-    paginate: import("@octokit/plugin-paginate-rest").PaginateInterface;
-}) | undefined>;
+export declare function getAppOctokit(): Promise<RestOctokit | undefined>;
 export declare function getRunner(octokit: RestOctokit, runnerLevel: RunnerLevel, owner: string, repo: string, name: string): Promise<{
     id: number;
     runner_group_id?: number;

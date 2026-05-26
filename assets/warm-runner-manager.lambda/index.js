@@ -5322,12 +5322,15 @@ var init_dist_node = __esm({
   }
 });
 
-// src/delete-failed-runner.lambda.ts
-var delete_failed_runner_lambda_exports = {};
-__export(delete_failed_runner_lambda_exports, {
+// src/warm-runner-manager.lambda.ts
+var warm_runner_manager_lambda_exports = {};
+__export(warm_runner_manager_lambda_exports, {
   handler: () => handler2
 });
-module.exports = __toCommonJS(delete_failed_runner_lambda_exports);
+module.exports = __toCommonJS(warm_runner_manager_lambda_exports);
+var crypto = __toESM(require("crypto"));
+var import_client_sfn = require("@aws-sdk/client-sfn");
+var import_client_sqs = require("@aws-sdk/client-sqs");
 
 // src/lambda-github.ts
 var import_crypto2 = require("crypto");
@@ -5347,6 +5350,45 @@ async function getSecretValue(arn) {
 }
 async function getSecretJsonValue(arn) {
   return JSON.parse(await getSecretValue(arn));
+}
+async function customResourceRespond(event, responseStatus, reason, physicalResourceId, data) {
+  const responseBody = JSON.stringify({
+    Status: responseStatus,
+    Reason: reason,
+    PhysicalResourceId: physicalResourceId,
+    StackId: event.StackId,
+    RequestId: event.RequestId,
+    LogicalResourceId: event.LogicalResourceId,
+    NoEcho: false,
+    Data: data
+  });
+  console.log({
+    notice: "Responding to CloudFormation custom resource",
+    status: responseStatus,
+    reason,
+    physicalResourceId,
+    responseBody
+  });
+  const parsedUrl = require("url").parse(event.ResponseURL);
+  const requestOptions = {
+    hostname: parsedUrl.hostname,
+    path: parsedUrl.path,
+    method: "PUT",
+    headers: {
+      "content-type": "",
+      "content-length": responseBody.length
+    }
+  };
+  return new Promise((resolve, reject) => {
+    try {
+      const request2 = require("https").request(requestOptions, resolve);
+      request2.on("error", reject);
+      request2.write(responseBody);
+      request2.end();
+    } catch (e) {
+      reject(e);
+    }
+  });
 }
 
 // src/lambda-github.ts
@@ -5423,6 +5465,29 @@ async function getOctokit(installationId) {
     githubSecrets
   };
 }
+async function getAppOctokit() {
+  if (!process.env.GITHUB_SECRET_ARN || !process.env.GITHUB_PRIVATE_KEY_SECRET_ARN) {
+    throw new Error("Missing environment variables");
+  }
+  const [{ Octokit: Octokit3 }, { createAppAuth: createAppAuth2 }] = await Promise.all([
+    loadOctokitRest(),
+    loadOctokitAuthApp()
+  ]);
+  const githubSecrets = await getSecretJsonValue(process.env.GITHUB_SECRET_ARN);
+  const baseUrl = baseUrlFromDomain(githubSecrets.domain);
+  if (githubSecrets.personalAuthToken || !githubSecrets.appId) {
+    return void 0;
+  }
+  const privateKey = await getSecretValue(process.env.GITHUB_PRIVATE_KEY_SECRET_ARN);
+  return new Octokit3({
+    baseUrl,
+    authStrategy: createAppAuth2,
+    auth: {
+      appId: githubSecrets.appId,
+      privateKey
+    }
+  });
+}
 async function getRunner(octokit, runnerLevel, owner, repo, name) {
   let page = 1;
   while (true) {
@@ -5467,59 +5532,358 @@ async function deleteRunner(octokit, runnerLevel, owner, repo, runnerId) {
   }
 }
 
-// src/delete-failed-runner.lambda.ts
-var RunnerBusy = class _RunnerBusy extends Error {
-  constructor(msg) {
-    super(msg);
-    this.name = "RunnerBusy";
-    Object.setPrototypeOf(this, _RunnerBusy.prototype);
+// src/warm-runner-manager.lambda.ts
+var sfn = new import_client_sfn.SFNClient();
+var sqs = new import_client_sqs.SQSClient();
+var SFN_EXECUTION_NAME_MAX_LENGTH = 80;
+function isSqsEvent(event) {
+  return Array.isArray(event.Records);
+}
+function isFillInput(event) {
+  return typeof event === "object" && event !== null && event.action === "fill";
+}
+function isCustomResourceEvent(event) {
+  const e = event;
+  return typeof e?.RequestType === "string" && typeof e?.ResponseURL === "string";
+}
+function requireEnv(name) {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`Missing environment variable ${name}`);
   }
-};
-var ReraisedError = class _ReraisedError extends Error {
-  constructor(event) {
-    super(event.error.Cause);
-    this.name = event.error.Error;
-    this.message = event.error.Cause;
-    Object.setPrototypeOf(this, _ReraisedError.prototype);
+  return value;
+}
+function deterministicExecutionName(providerPath, seed) {
+  const pathWithoutStack = providerPath.split("/").slice(1).join("/") || providerPath;
+  const sanitized = `warm-${pathWithoutStack.replace(/[^a-zA-Z0-9-]/g, "-")}`;
+  const hash = crypto.createHash("sha256").update(seed).digest("hex").slice(0, 16);
+  const maxPrefixLen = SFN_EXECUTION_NAME_MAX_LENGTH - hash.length - 1;
+  return `${sanitized.slice(0, maxPrefixLen)}-${hash}`;
+}
+function getNextMidnightUtcMs() {
+  const now = /* @__PURE__ */ new Date();
+  const nextMidnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0, 0));
+  return nextMidnight.getTime();
+}
+async function resolveInstallationId(owner, repo) {
+  const appOctokit = await getAppOctokit();
+  if (!appOctokit) {
+    return void 0;
   }
-};
-async function handler2(event) {
-  const { octokit, githubSecrets } = await getOctokit(event.installationId);
-  const runner = await getRunner(octokit, githubSecrets.runnerLevel, event.owner, event.repo, event.runnerName);
-  if (!runner) {
-    console.error({
-      notice: "Unable to find runner id",
-      owner: event.owner,
-      repo: event.repo,
-      runnerName: event.runnerName
+  if (repo) {
+    const { data } = await appOctokit.rest.apps.getRepoInstallation({ owner, repo });
+    return data.id;
+  } else {
+    const { data } = await appOctokit.rest.apps.getOrgInstallation({ org: owner });
+    return data.id;
+  }
+}
+async function startWarmRunnerAndEnqueueKeeper(input) {
+  const stepFunctionArn = requireEnv("STEP_FUNCTION_ARN");
+  const queueUrl = requireEnv("WARM_RUNNER_QUEUE_URL");
+  const remainingSeconds = Math.floor((input.absoluteDeadline - Date.now()) / 1e3);
+  if (remainingSeconds <= 0) {
+    console.log({
+      notice: "Absolute deadline already passed; not starting replacement",
+      configHash: input.configHash,
+      runnerName: input.executionName,
+      input
     });
-    throw new ReraisedError(event);
+    return;
+  }
+  let executionArn;
+  try {
+    const result = await sfn.send(new import_client_sfn.StartExecutionCommand({
+      stateMachineArn: stepFunctionArn,
+      name: input.executionName,
+      input: JSON.stringify({
+        owner: input.owner,
+        repo: input.repo || "",
+        jobId: -1,
+        jobUrl: "",
+        installationId: input.installationId ?? -1,
+        jobLabels: input.providerLabels.join(","),
+        provider: input.providerPath,
+        labels: [...input.providerLabels, "cdkghr:warm"].join(","),
+        maxIdleSeconds: remainingSeconds
+      })
+    }));
+    executionArn = result.executionArn;
+  } catch (e) {
+    if (e instanceof import_client_sfn.ExecutionAlreadyExists) {
+      console.log({
+        notice: "ExecutionAlreadyExists \u2014 idempotent retry, skipping enqueue",
+        configHash: input.configHash,
+        slot: input.slot,
+        runnerName: input.executionName
+      });
+      return;
+    } else {
+      throw e;
+    }
+  }
+  const message = {
+    executionArn,
+    runnerName: input.executionName,
+    owner: input.owner,
+    repo: input.repo,
+    installationId: input.installationId,
+    providerPath: input.providerPath,
+    providerLabels: input.providerLabels,
+    absoluteDeadline: input.absoluteDeadline,
+    configHash: input.configHash
+  };
+  await sqs.send(new import_client_sqs.SendMessageCommand({
+    QueueUrl: queueUrl,
+    MessageBody: JSON.stringify(message)
+  }));
+  console.log({
+    notice: "Started warm runner and enqueued keeper message",
+    configHash: input.configHash,
+    slot: input.slot,
+    runnerName: input.executionName,
+    executionArn,
+    remainingSeconds
+  });
+}
+async function runFiller(input, getNameForSlot, source, absoluteDeadlineOverride) {
+  const installationId = await resolveInstallationId(input.owner, input.repo);
+  const absoluteDeadline = absoluteDeadlineOverride ?? Date.now() + input.duration * 1e3;
+  for (let i = 0; i < input.count; i++) {
+    await startWarmRunnerAndEnqueueKeeper({
+      providerPath: input.providerPath,
+      providerLabels: input.providerLabels,
+      owner: input.owner,
+      repo: input.repo,
+      installationId,
+      absoluteDeadline,
+      configHash: input.configHash,
+      executionName: getNameForSlot(i),
+      slot: i
+    });
   }
   console.log({
-    notice: "Found runner id",
-    runnerName: event.runnerName,
-    runnerId: runner.id,
-    owner: event.owner,
-    repo: event.repo
+    notice: "Fill complete - started warm runners",
+    source,
+    configHash: input.configHash,
+    providerPath: input.providerPath,
+    started: input.count
   });
+}
+async function stopAndDeleteRunner(input, octokit, secrets, reason) {
   try {
-    await deleteRunner(octokit, githubSecrets.runnerLevel, event.owner, event.repo, runner.id);
+    await sfn.send(new import_client_sfn.StopExecutionCommand({
+      executionArn: input.executionArn,
+      error: reason,
+      cause: "Warm runner stopped by keeper"
+    }));
   } catch (e) {
-    const reqError = e;
-    if (reqError.message.includes("is still running a job")) {
-      throw new RunnerBusy(reqError.message);
-    } else {
+    console.error({
+      notice: "Failed to stop step function",
+      configHash: input.configHash,
+      runnerName: input.runnerName,
+      executionArn: input.executionArn,
+      error: e,
+      input
+    });
+  }
+  const runner = await getRunner(octokit, secrets.runnerLevel, input.owner, input.repo, input.runnerName);
+  if (runner) {
+    try {
+      await deleteRunner(octokit, secrets.runnerLevel, input.owner, input.repo, runner.id);
+    } catch (e) {
       console.error({
-        notice: "Unable to delete runner",
-        owner: event.owner,
-        repo: event.repo,
+        notice: "Failed to delete runner",
+        configHash: input.configHash,
+        runnerName: input.runnerName,
         runnerId: runner.id,
-        runnerName: event.runnerName,
-        error: e
+        error: e,
+        input
       });
     }
   }
-  throw new ReraisedError(event);
+}
+async function handler2(event) {
+  if (isCustomResourceEvent(event)) {
+    const physicalId = ("PhysicalResourceId" in event ? event.PhysicalResourceId : void 0) ?? event.LogicalResourceId;
+    try {
+      const props = event.ResourceProperties;
+      console.log({
+        notice: "Custom resource fill",
+        requestType: event.RequestType,
+        logicalResourceId: event.LogicalResourceId,
+        configHash: props.configHash,
+        providerPath: props.providerPath,
+        count: props.count
+      });
+      if (event.RequestType === "Create" || event.RequestType === "Update") {
+        const getNameForSlot = (slot) => deterministicExecutionName(props.providerPath, `${event.LogicalResourceId}:${event.RequestType}:${props.configHash}:${slot}`);
+        const deadline = getNextMidnightUtcMs();
+        await runFiller(props, getNameForSlot, "customResource", deadline);
+      }
+      await customResourceRespond(event, "SUCCESS", "OK", physicalId, {});
+    } catch (e) {
+      console.error({ notice: "Custom resource handler failed", error: e });
+      await customResourceRespond(event, "FAILED", e.message || "Internal Error", physicalId, {});
+    }
+    return;
+  }
+  if (!isSqsEvent(event)) {
+    console.error({ notice: "Unknown event type; ignoring", event });
+    return;
+  }
+  const validHashes = new Set((process.env.WARM_CONFIG_HASHES ?? "").split(",").filter(Boolean));
+  const result = { batchItemFailures: [] };
+  const octokitCache2 = /* @__PURE__ */ new Map();
+  for (const record of event.Records) {
+    let body;
+    try {
+      body = JSON.parse(record.body);
+    } catch (e) {
+      console.error({
+        notice: "Failed to parse message body",
+        requestId: record.messageId,
+        error: e
+      });
+      continue;
+    }
+    const retryLater = () => result.batchItemFailures.push({ itemIdentifier: record.messageId });
+    const isFill = isFillInput(body);
+    const configHash = body.configHash;
+    const runnerName = isFill ? void 0 : body.runnerName;
+    console.log({
+      notice: "Processing SQS message",
+      messageId: record.messageId,
+      configHash,
+      runnerName
+    });
+    if (isFill) {
+      const fillPayload = body;
+      try {
+        console.log({
+          notice: "Scheduled fill",
+          configHash,
+          providerPath: fillPayload.providerPath,
+          count: fillPayload.count
+        });
+        const getNameForSlot = (slot) => deterministicExecutionName(fillPayload.providerPath, `${record.messageId}:${slot}`);
+        await runFiller(fillPayload, getNameForSlot, "scheduled", void 0);
+      } catch (e) {
+        console.error({
+          notice: "Fill failed",
+          messageId: record.messageId,
+          configHash: fillPayload.configHash,
+          error: e
+        });
+        retryLater();
+      }
+      continue;
+    }
+    const input = body;
+    console.log({
+      notice: "Checking warm runner",
+      configHash: input.configHash,
+      runnerName: input.runnerName
+    });
+    let octokit;
+    let secrets;
+    const cached = octokitCache2.get(input.installationId);
+    if (cached) {
+      octokit = cached.octokit;
+      secrets = cached.secrets;
+    } else {
+      const got = await getOctokit(input.installationId);
+      octokit = got.octokit;
+      secrets = got.githubSecrets;
+      octokitCache2.set(input.installationId, { octokit, secrets });
+    }
+    if (!validHashes.has(input.configHash)) {
+      console.log({
+        notice: "Config hash mismatch (new CDK deployment, old runner) - stopping stale warm runner",
+        configHash: input.configHash,
+        runnerName: input.runnerName,
+        validHashes
+      });
+      try {
+        await stopAndDeleteRunner(input, octokit, secrets, "StaleWarmRunner");
+      } catch (e) {
+        console.error({
+          notice: "Best-effort cleanup of stale warm runner failed; it will self-terminate at idle timeout",
+          configHash: input.configHash,
+          runnerName: input.runnerName,
+          error: e
+        });
+      }
+      continue;
+    }
+    if (Date.now() >= input.absoluteDeadline) {
+      console.log({
+        notice: "Warm runner past deadline, stopping and deleting",
+        configHash: input.configHash,
+        runnerName: input.runnerName
+      });
+      try {
+        await stopAndDeleteRunner(input, octokit, secrets, "WarmRunnerExpired");
+      } catch (e) {
+        console.error({
+          notice: "Failed to stop expired warm runner",
+          configHash: input.configHash,
+          runnerName: input.runnerName,
+          error: e
+        });
+      }
+      continue;
+    }
+    const execution = await sfn.send(new import_client_sfn.DescribeExecutionCommand({ executionArn: input.executionArn }));
+    const stillRunning = execution.status === "RUNNING";
+    const runner = await getRunner(octokit, secrets.runnerLevel, input.owner, input.repo, input.runnerName);
+    if (!stillRunning || runner?.busy) {
+      console.log({
+        notice: "Warm runner finished or busy; starting replacement",
+        configHash: input.configHash,
+        runnerName: input.runnerName,
+        stillRunning,
+        runnerBusy: runner?.busy ?? false
+      });
+      try {
+        await startWarmRunnerAndEnqueueKeeper({
+          providerPath: input.providerPath,
+          providerLabels: input.providerLabels,
+          owner: input.owner,
+          repo: input.repo,
+          installationId: input.installationId,
+          absoluteDeadline: input.absoluteDeadline,
+          configHash: input.configHash,
+          executionName: deterministicExecutionName(input.providerPath, record.messageId)
+        });
+      } catch (e) {
+        console.error({
+          notice: "Failed to start replacement warm runner",
+          configHash: input.configHash,
+          runnerName: input.runnerName,
+          error: e
+        });
+        retryLater();
+      }
+      continue;
+    }
+    if (!runner) {
+      console.log({
+        notice: "Runner not running yet",
+        configHash: input.configHash,
+        runnerName: input.runnerName
+      });
+      retryLater();
+      continue;
+    }
+    console.log({
+      notice: "Runner still idle - will check again later",
+      configHash: input.configHash,
+      runnerName: input.runnerName
+    });
+    retryLater();
+  }
+  return result;
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
