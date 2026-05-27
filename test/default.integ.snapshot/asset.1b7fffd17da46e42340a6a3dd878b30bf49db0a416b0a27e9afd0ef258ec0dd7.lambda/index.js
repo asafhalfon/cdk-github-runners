@@ -5322,12 +5322,19 @@ var init_dist_node = __esm({
   }
 });
 
-// src/token-retriever.lambda.ts
-var token_retriever_lambda_exports = {};
-__export(token_retriever_lambda_exports, {
-  handler: () => handler2
+// src/webhook-handler.lambda.ts
+var webhook_handler_lambda_exports = {};
+__export(webhook_handler_lambda_exports, {
+  callProviderSelector: () => callProviderSelector,
+  generateExecutionName: () => generateExecutionName,
+  handler: () => handler2,
+  selectProvider: () => selectProvider,
+  verifyBody: () => verifyBody
 });
-module.exports = __toCommonJS(token_retriever_lambda_exports);
+module.exports = __toCommonJS(webhook_handler_lambda_exports);
+var crypto = __toESM(require("crypto"));
+var import_client_lambda = require("@aws-sdk/client-lambda");
+var import_client_sfn = require("@aws-sdk/client-sfn");
 
 // src/lambda-github.ts
 var import_crypto2 = require("crypto");
@@ -5424,153 +5431,260 @@ async function getOctokit(installationId) {
   };
 }
 
-// src/token-retriever.lambda.ts
-var RunnerTokenError = class _RunnerTokenError extends Error {
-  constructor(msg) {
-    super(msg);
-    this.name = "RunnerTokenError";
-    Object.setPrototypeOf(this, _RunnerTokenError.prototype);
-  }
-};
-async function handler2(event) {
-  try {
-    const {
-      githubSecrets,
-      octokit
-    } = await getOctokit(event.installationId);
-    if (event.jobId) {
-      const jobStatus = await checkJobStatus(octokit, event.owner, event.repo, event.jobId);
-      if (jobStatus !== "queued") {
-        console.log({
-          notice: "Job is no longer queued, skipping runner creation",
-          jobId: event.jobId,
-          jobStatus,
-          owner: event.owner,
-          repo: event.repo
-        });
-        return {
-          domain: githubSecrets.domain,
-          skip: true,
-          token: "",
-          registrationUrl: "",
-          jitConfig: "",
-          runnerId: 0
-        };
-      }
-    }
-    if (event.jobId) {
-      const jitResult = await getJitConfig(octokit, githubSecrets.runnerLevel, event.owner, event.repo, event.runnerName, event.labels, event.jobId);
-      return {
-        domain: githubSecrets.domain,
-        jitConfig: jitResult.encodedJitConfig,
-        runnerId: jitResult.runnerId,
-        skip: false,
-        token: "",
-        registrationUrl: ""
-      };
-    }
-    let token;
-    let registrationUrl;
-    if (githubSecrets.runnerLevel === "repo" || githubSecrets.runnerLevel === void 0) {
-      token = await getRegistrationTokenForRepo(octokit, event.owner, event.repo);
-      registrationUrl = `https://${githubSecrets.domain}/${event.owner}/${event.repo}`;
-    } else if (githubSecrets.runnerLevel === "org") {
-      token = await getRegistrationTokenForOrg(octokit, event.owner);
-      registrationUrl = `https://${githubSecrets.domain}/${event.owner}`;
-    } else {
-      throw new RunnerTokenError("Invalid runner level");
-    }
-    return {
-      domain: githubSecrets.domain,
-      token,
-      registrationUrl,
-      jitConfig: "",
-      runnerId: 0,
-      skip: false
-    };
-  } catch (error) {
-    console.error({
-      notice: "Failed to retrieve runner registration token",
-      owner: event.owner,
-      repo: event.repo,
-      runnerName: event.runnerName,
-      jobId: event.jobId,
-      error: `${error}`
-    });
-    throw new RunnerTokenError(error.message);
-  }
-}
-function ensureDefaultLabels(labels) {
-  const defaultLabels = ["self-hosted"];
-  const lowerLabels = labels.map((l) => l.toLowerCase());
-  for (const dl of defaultLabels) {
-    if (!lowerLabels.includes(dl.toLowerCase())) {
-      labels.unshift(dl);
+// src/webhook-handler.lambda.ts
+var sf = new import_client_sfn.SFNClient();
+var lambdaClient = new import_client_lambda.LambdaClient();
+function getHeader(event, header) {
+  for (const headerName of Object.keys(event.headers)) {
+    if (headerName.toLowerCase() === header.toLowerCase()) {
+      return event.headers[headerName];
     }
   }
-  return labels;
+  return void 0;
 }
-async function checkJobStatus(octokit, owner, repo, jobId) {
-  const response = await octokit.rest.actions.getJobForWorkflowRun({
-    owner,
-    repo,
-    job_id: jobId
-  });
-  return response.data.status;
-}
-async function getJitConfig(octokit, runnerLevel, owner, repo, runnerName, labels, jobId) {
-  const runnerGroupId = 1;
-  const epochSeconds = Math.floor(Date.now() / 1e3);
-  const labelsWithStarted = [
-    ...Array.isArray(labels) ? labels : labels.split(","),
-    `cdkghr:started:${epochSeconds}`
-  ];
-  const body = {
-    name: runnerName,
-    runner_group_id: runnerGroupId,
-    labels: ensureDefaultLabels(labelsWithStarted.map((l) => l.trim()).filter((l) => l.length > 0)),
-    work_folder: "_work"
-  };
-  let response;
-  if ((runnerLevel ?? "repo") === "repo") {
-    response = await octokit.request("POST /repos/{owner}/{repo}/actions/runners/generate-jitconfig", {
-      owner,
-      repo,
-      ...body
-    });
+function verifyBody(event, secret) {
+  const sig = Buffer.from(getHeader(event, "x-hub-signature-256") || "", "utf8");
+  if (!event.body) {
+    throw new Error("No body");
+  }
+  let body;
+  if (event.isBase64Encoded) {
+    body = Buffer.from(event.body, "base64");
   } else {
-    response = await octokit.request("POST /orgs/{org}/actions/runners/generate-jitconfig", {
-      org: owner,
-      ...body
+    body = Buffer.from(event.body || "", "utf8");
+  }
+  const hmac = crypto.createHmac("sha256", secret);
+  hmac.update(body);
+  const expectedSig = Buffer.from(`sha256=${hmac.digest("hex")}`, "utf8");
+  console.log({
+    notice: "Calculated signature",
+    signature: expectedSig.toString()
+  });
+  if (sig.length !== expectedSig.length || !crypto.timingSafeEqual(sig, expectedSig)) {
+    throw new Error(`Signature mismatch. Expected ${expectedSig.toString()} but got ${sig.toString()}`);
+  }
+  return body.toString();
+}
+async function isDeploymentPending(payload) {
+  const statusesUrl = payload.deployment?.statuses_url;
+  if (statusesUrl === void 0) {
+    return false;
+  }
+  try {
+    const { octokit } = await getOctokit(payload.installation?.id);
+    const statuses = await octokit.request(statusesUrl);
+    return statuses.data[0]?.state === "waiting";
+  } catch (e) {
+    console.error({
+      notice: "Unable to check deployment. Try adding deployment read permission.",
+      error: e
     });
+    return false;
+  }
+}
+function matchLabelsToProvider(jobLabels, providers) {
+  const jobLabelLowerCase = jobLabels.map((label) => label.toLowerCase());
+  for (const provider of Object.keys(providers)) {
+    const providerLabelsLowerCase = providers[provider].map((label) => label.toLowerCase());
+    if (jobLabelLowerCase.every((label) => label == "self-hosted" || providerLabelsLowerCase.includes(label))) {
+      return provider;
+    }
+  }
+  return void 0;
+}
+async function callProviderSelector(payload, providers, defaultSelection) {
+  if (!process.env.PROVIDER_SELECTOR_ARN) {
+    return void 0;
+  }
+  const selectorInput = {
+    payload,
+    providers,
+    defaultProvider: defaultSelection.provider,
+    defaultLabels: defaultSelection.labels
+  };
+  const result = await lambdaClient.send(new import_client_lambda.InvokeCommand({
+    FunctionName: process.env.PROVIDER_SELECTOR_ARN,
+    Payload: JSON.stringify(selectorInput)
+  }));
+  if (result.FunctionError) {
+    const selectorResponsePayload = result.Payload ? Buffer.from(result.Payload).toString() : void 0;
+    console.error({
+      notice: "Provider selector failed",
+      functionError: result.FunctionError,
+      payload: selectorResponsePayload
+    });
+    throw new Error("Provider selector failed");
+  }
+  if (!result.Payload) {
+    throw new Error("Provider selector returned no payload");
+  }
+  return JSON.parse(Buffer.from(result.Payload).toString());
+}
+async function selectProvider(payload, jobLabels, hook6 = callProviderSelector) {
+  const providers = JSON.parse(process.env.PROVIDERS);
+  const defaultProvider = matchLabelsToProvider(jobLabels, providers);
+  const defaultLabels = defaultProvider ? providers[defaultProvider] : void 0;
+  const defaultSelection = { provider: defaultProvider, labels: defaultLabels };
+  const selectorResult = await hook6(payload, providers, defaultSelection);
+  if (selectorResult === void 0) {
+    return defaultSelection;
   }
   console.log({
-    notice: "Generated JIT runner config",
-    runnerId: response.data.runner.id,
-    runnerName: response.data.runner.name,
-    jobId
+    notice: "Before provider selector",
+    provider: defaultProvider,
+    labels: defaultLabels,
+    jobLabels
+  });
+  console.log({
+    notice: "After provider selector",
+    provider: selectorResult.provider,
+    labels: selectorResult.labels,
+    jobLabels
+  });
+  if (selectorResult.provider !== void 0) {
+    if (selectorResult.provider === "") {
+      throw new Error("Provider selector returned empty provider");
+    }
+    if (!providers[selectorResult.provider]) {
+      throw new Error(`Provider selector returned unknown provider ${selectorResult.provider}`);
+    }
+    if (selectorResult.labels === void 0 || selectorResult.labels.length === 0) {
+      throw new Error("Provider selector must return non-empty labels when provider is set");
+    }
+  }
+  return selectorResult;
+}
+function generateExecutionName(event, payload) {
+  const deliveryId = getHeader(event, "x-github-delivery") ?? `${Math.random()}`;
+  const repoNameTruncated = payload.repository.name.slice(0, 64 - deliveryId.length - 1);
+  return `${repoNameTruncated}-${deliveryId}`;
+}
+async function handler2(event) {
+  if (!process.env.WEBHOOK_SECRET_ARN || !process.env.STEP_FUNCTION_ARN || !process.env.PROVIDERS || !process.env.REQUIRE_SELF_HOSTED_LABEL) {
+    throw new Error("Missing environment variables");
+  }
+  const webhookSecret = (await getSecretJsonValue(process.env.WEBHOOK_SECRET_ARN)).webhookSecret;
+  let body;
+  try {
+    body = verifyBody(event, webhookSecret);
+  } catch (e) {
+    console.error({
+      notice: "Bad signature",
+      error: e
+    });
+    return {
+      statusCode: 403,
+      body: "Bad signature"
+    };
+  }
+  if (getHeader(event, "content-type") !== "application/json") {
+    console.error({
+      notice: "This webhook only accepts JSON payloads",
+      contentType: getHeader(event, "content-type")
+    });
+    return {
+      statusCode: 400,
+      body: "Expecting JSON payload"
+    };
+  }
+  if (getHeader(event, "x-github-event") === "ping") {
+    return {
+      statusCode: 200,
+      body: "Pong"
+    };
+  }
+  if (getHeader(event, "x-github-event") !== "workflow_job") {
+    console.error({
+      notice: "This webhook only accepts workflow_job",
+      githubEvent: getHeader(event, "x-github-event")
+    });
+    return {
+      statusCode: 200,
+      body: "Expecting workflow_job"
+    };
+  }
+  const payload = JSON.parse(body);
+  if (payload.action !== "queued") {
+    console.log({
+      notice: `Ignoring action "${payload.action}", expecting "queued"`,
+      job: payload.workflow_job
+    });
+    return {
+      statusCode: 200,
+      body: 'OK. No runner started (action is not "queued").'
+    };
+  }
+  if (process.env.REQUIRE_SELF_HOSTED_LABEL === "1" && !payload.workflow_job.labels.includes("self-hosted")) {
+    console.log({
+      notice: `Ignoring labels "${payload.workflow_job.labels}", expecting "self-hosted"`,
+      job: payload.workflow_job
+    });
+    return {
+      statusCode: 200,
+      body: 'OK. No runner started (no "self-hosted" label).'
+    };
+  }
+  const selection = await selectProvider(payload, payload.workflow_job.labels);
+  if (!selection.provider || !selection.labels) {
+    console.log({
+      notice: `Ignoring labels "${payload.workflow_job.labels}", as they don't match a supported runner provider`,
+      job: payload.workflow_job
+    });
+    return {
+      statusCode: 200,
+      body: "OK. No runner started (no provider with matching labels)."
+    };
+  }
+  if (await isDeploymentPending(payload)) {
+    console.log({
+      notice: "Ignoring job as its deployment is still pending",
+      job: payload.workflow_job
+    });
+    return {
+      statusCode: 200,
+      body: "OK. No runner started (deployment pending)."
+    };
+  }
+  const executionName = generateExecutionName(event, payload);
+  const idleTimeoutSeconds = process.env.IDLE_TIMEOUT_SECONDS ? parseInt(process.env.IDLE_TIMEOUT_SECONDS, 10) : 300;
+  const input = {
+    owner: payload.repository.owner.login,
+    repo: payload.repository.name,
+    jobId: payload.workflow_job.id,
+    jobUrl: payload.workflow_job.html_url,
+    installationId: payload.installation?.id ?? -1,
+    // always pass value because step function can't handle missing input
+    jobLabels: payload.workflow_job.labels.join(","),
+    // original labels requested by the job
+    provider: selection.provider,
+    labels: selection.labels.join(","),
+    // labels to use when registering runner
+    maxIdleSeconds: idleTimeoutSeconds
+  };
+  const execution = await sf.send(new import_client_sfn.StartExecutionCommand({
+    stateMachineArn: process.env.STEP_FUNCTION_ARN,
+    input: JSON.stringify(input),
+    // name is not random so multiple execution of this webhook won't cause multiple builders to start
+    name: executionName
+  }));
+  console.log({
+    notice: "Started orchestrator",
+    execution: execution.executionArn,
+    sfnInput: input,
+    job: payload.workflow_job
   });
   return {
-    encodedJitConfig: response.data.encoded_jit_config,
-    runnerId: response.data.runner.id
+    statusCode: 202,
+    body: executionName
   };
-}
-async function getRegistrationTokenForOrg(octokit, owner) {
-  const response = await octokit.rest.actions.createRegistrationTokenForOrg({
-    org: owner
-  });
-  return response.data.token;
-}
-async function getRegistrationTokenForRepo(octokit, owner, repo) {
-  const response = await octokit.rest.actions.createRegistrationTokenForRepo({
-    owner,
-    repo
-  });
-  return response.data.token;
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
-  handler
+  callProviderSelector,
+  generateExecutionName,
+  handler,
+  selectProvider,
+  verifyBody
 });
 /*! Bundled license information:
 

@@ -5322,12 +5322,13 @@ var init_dist_node = __esm({
   }
 });
 
-// src/token-retriever.lambda.ts
-var token_retriever_lambda_exports = {};
-__export(token_retriever_lambda_exports, {
+// src/idle-runner-repear.lambda.ts
+var idle_runner_repear_lambda_exports = {};
+__export(idle_runner_repear_lambda_exports, {
   handler: () => handler2
 });
-module.exports = __toCommonJS(token_retriever_lambda_exports);
+module.exports = __toCommonJS(idle_runner_repear_lambda_exports);
+var import_client_sfn = require("@aws-sdk/client-sfn");
 
 // src/lambda-github.ts
 var import_crypto2 = require("crypto");
@@ -5423,150 +5424,189 @@ async function getOctokit(installationId) {
     githubSecrets
   };
 }
-
-// src/token-retriever.lambda.ts
-var RunnerTokenError = class _RunnerTokenError extends Error {
-  constructor(msg) {
-    super(msg);
-    this.name = "RunnerTokenError";
-    Object.setPrototypeOf(this, _RunnerTokenError.prototype);
-  }
-};
-async function handler2(event) {
-  try {
-    const {
-      githubSecrets,
-      octokit
-    } = await getOctokit(event.installationId);
-    if (event.jobId) {
-      const jobStatus = await checkJobStatus(octokit, event.owner, event.repo, event.jobId);
-      if (jobStatus !== "queued") {
-        console.log({
-          notice: "Job is no longer queued, skipping runner creation",
-          jobId: event.jobId,
-          jobStatus,
-          owner: event.owner,
-          repo: event.repo
-        });
-        return {
-          domain: githubSecrets.domain,
-          skip: true,
-          token: "",
-          registrationUrl: "",
-          jitConfig: "",
-          runnerId: 0
-        };
+async function getRunner(octokit, runnerLevel, owner, repo, name) {
+  let page = 1;
+  while (true) {
+    let runners;
+    if ((runnerLevel ?? "repo") === "repo") {
+      runners = await octokit.rest.actions.listSelfHostedRunnersForRepo({
+        name,
+        page,
+        owner,
+        repo
+      });
+    } else {
+      runners = await octokit.rest.actions.listSelfHostedRunnersForOrg({
+        name,
+        page,
+        org: owner
+      });
+    }
+    if (runners.data.runners.length == 0) {
+      return;
+    }
+    for (const runner of runners.data.runners) {
+      if (runner.name == name) {
+        return runner;
       }
     }
-    if (event.jobId) {
-      const jitResult = await getJitConfig(octokit, githubSecrets.runnerLevel, event.owner, event.repo, event.runnerName, event.labels, event.jobId);
-      return {
-        domain: githubSecrets.domain,
-        jitConfig: jitResult.encodedJitConfig,
-        runnerId: jitResult.runnerId,
-        skip: false,
-        token: "",
-        registrationUrl: ""
-      };
-    }
-    let token;
-    let registrationUrl;
-    if (githubSecrets.runnerLevel === "repo" || githubSecrets.runnerLevel === void 0) {
-      token = await getRegistrationTokenForRepo(octokit, event.owner, event.repo);
-      registrationUrl = `https://${githubSecrets.domain}/${event.owner}/${event.repo}`;
-    } else if (githubSecrets.runnerLevel === "org") {
-      token = await getRegistrationTokenForOrg(octokit, event.owner);
-      registrationUrl = `https://${githubSecrets.domain}/${event.owner}`;
-    } else {
-      throw new RunnerTokenError("Invalid runner level");
-    }
-    return {
-      domain: githubSecrets.domain,
-      token,
-      registrationUrl,
-      jitConfig: "",
-      runnerId: 0,
-      skip: false
-    };
-  } catch (error) {
-    console.error({
-      notice: "Failed to retrieve runner registration token",
-      owner: event.owner,
-      repo: event.repo,
-      runnerName: event.runnerName,
-      jobId: event.jobId,
-      error: `${error}`
-    });
-    throw new RunnerTokenError(error.message);
+    page++;
   }
 }
-function ensureDefaultLabels(labels) {
-  const defaultLabels = ["self-hosted"];
-  const lowerLabels = labels.map((l) => l.toLowerCase());
-  for (const dl of defaultLabels) {
-    if (!lowerLabels.includes(dl.toLowerCase())) {
-      labels.unshift(dl);
-    }
-  }
-  return labels;
-}
-async function checkJobStatus(octokit, owner, repo, jobId) {
-  const response = await octokit.rest.actions.getJobForWorkflowRun({
-    owner,
-    repo,
-    job_id: jobId
-  });
-  return response.data.status;
-}
-async function getJitConfig(octokit, runnerLevel, owner, repo, runnerName, labels, jobId) {
-  const runnerGroupId = 1;
-  const epochSeconds = Math.floor(Date.now() / 1e3);
-  const labelsWithStarted = [
-    ...Array.isArray(labels) ? labels : labels.split(","),
-    `cdkghr:started:${epochSeconds}`
-  ];
-  const body = {
-    name: runnerName,
-    runner_group_id: runnerGroupId,
-    labels: ensureDefaultLabels(labelsWithStarted.map((l) => l.trim()).filter((l) => l.length > 0)),
-    work_folder: "_work"
-  };
-  let response;
+async function deleteRunner(octokit, runnerLevel, owner, repo, runnerId) {
   if ((runnerLevel ?? "repo") === "repo") {
-    response = await octokit.request("POST /repos/{owner}/{repo}/actions/runners/generate-jitconfig", {
+    await octokit.rest.actions.deleteSelfHostedRunnerFromRepo({
       owner,
       repo,
-      ...body
+      runner_id: runnerId
     });
   } else {
-    response = await octokit.request("POST /orgs/{org}/actions/runners/generate-jitconfig", {
+    await octokit.rest.actions.deleteSelfHostedRunnerFromOrg({
       org: owner,
-      ...body
+      runner_id: runnerId
     });
   }
-  console.log({
-    notice: "Generated JIT runner config",
-    runnerId: response.data.runner.id,
-    runnerName: response.data.runner.name,
-    jobId
-  });
-  return {
-    encodedJitConfig: response.data.encoded_jit_config,
-    runnerId: response.data.runner.id
-  };
 }
-async function getRegistrationTokenForOrg(octokit, owner) {
-  const response = await octokit.rest.actions.createRegistrationTokenForOrg({
-    org: owner
-  });
-  return response.data.token;
-}
-async function getRegistrationTokenForRepo(octokit, owner, repo) {
-  const response = await octokit.rest.actions.createRegistrationTokenForRepo({
-    owner,
-    repo
-  });
-  return response.data.token;
+
+// src/idle-runner-repear.lambda.ts
+var sfn = new import_client_sfn.SFNClient();
+async function handler2(event) {
+  const result = { batchItemFailures: [] };
+  const octokitCache2 = /* @__PURE__ */ new Map();
+  for (const record of event.Records) {
+    const input = JSON.parse(record.body);
+    console.log({
+      notice: "Checking runner",
+      runnerName: input.runnerName,
+      input
+    });
+    const retryLater = () => result.batchItemFailures.push({ itemIdentifier: record.messageId });
+    const execution = await sfn.send(new import_client_sfn.DescribeExecutionCommand({ executionArn: input.executionArn }));
+    if (execution.status != "RUNNING") {
+      console.log({
+        notice: "Runner already finished",
+        runnerName: input.runnerName,
+        input
+      });
+      continue;
+    }
+    let octokit;
+    let secrets;
+    const cached = octokitCache2.get(input.installationId);
+    if (cached) {
+      octokit = cached.octokit;
+      secrets = cached.secrets;
+    } else {
+      const { octokit: newOctokit, githubSecrets: newSecrets } = await getOctokit(input.installationId);
+      octokit = newOctokit;
+      secrets = newSecrets;
+      octokitCache2.set(input.installationId, { octokit, secrets });
+    }
+    const runner = await getRunner(octokit, secrets.runnerLevel, input.owner, input.repo, input.runnerName);
+    if (!runner) {
+      console.log({
+        notice: "Runner not running yet",
+        runnerName: input.runnerName,
+        input
+      });
+      retryLater();
+      continue;
+    }
+    if (runner.busy) {
+      console.log({
+        notice: "Runner is not idle",
+        runnerId: runner.id,
+        runnerName: input.runnerName,
+        input
+      });
+      retryLater();
+      continue;
+    }
+    let found = false;
+    for (const label of runner.labels) {
+      if (label.name.toLowerCase().startsWith("cdkghr:started:")) {
+        const started = parseFloat(label.name.split(":")[2]);
+        const startedDate = new Date(started * 1e3);
+        const now = /* @__PURE__ */ new Date();
+        const diffMs = now.getTime() - startedDate.getTime();
+        console.log({
+          notice: "Runner is idle",
+          runnerId: runner.id,
+          runnerName: input.runnerName,
+          idleSeconds: diffMs / 1e3,
+          input
+        });
+        if (diffMs > 1e3 * input.maxIdleSeconds) {
+          console.log({
+            notice: "Runner is idle for too long",
+            runnerId: runner.id,
+            runnerName: input.runnerName,
+            idleSeconds: diffMs / 1e3,
+            maxIdleSeconds: input.maxIdleSeconds,
+            input
+          });
+          try {
+            console.log({
+              notice: "Stopping step function",
+              executionArn: input.executionArn,
+              runnerId: runner.id,
+              runnerName: input.runnerName,
+              input
+            });
+            await sfn.send(new import_client_sfn.StopExecutionCommand({
+              executionArn: input.executionArn,
+              error: "IdleRunner",
+              cause: `Runner ${input.runnerName} on ${input.owner}/${input.repo} is idle for too long (${diffMs / 1e3} seconds and limit is ${input.maxIdleSeconds} seconds)`
+            }));
+          } catch (e) {
+            console.error({
+              notice: "Failed to stop step function",
+              executionArn: input.executionArn,
+              runnerId: runner.id,
+              runnerName: input.runnerName,
+              error: e,
+              input
+            });
+            retryLater();
+            continue;
+          }
+          try {
+            console.log({
+              notice: "Deleting runner",
+              runnerId: runner.id,
+              runnerName: input.runnerName,
+              input
+            });
+            await deleteRunner(octokit, secrets.runnerLevel, input.owner, input.repo, runner.id);
+          } catch (e) {
+            console.error({
+              notice: "Failed to delete runner",
+              runnerId: runner.id,
+              runnerName: input.runnerName,
+              error: e,
+              input
+            });
+            retryLater();
+            continue;
+          }
+        } else {
+          retryLater();
+        }
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      console.error({
+        notice: "No `cdkghr:started:xxx` label found???",
+        runnerId: runner.id,
+        runnerName: input.runnerName,
+        input
+      });
+      retryLater();
+    }
+  }
+  return result;
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {

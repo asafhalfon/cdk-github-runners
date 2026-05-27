@@ -5322,12 +5322,12 @@ var init_dist_node = __esm({
   }
 });
 
-// src/token-retriever.lambda.ts
-var token_retriever_lambda_exports = {};
-__export(token_retriever_lambda_exports, {
+// src/delete-failed-runner.lambda.ts
+var delete_failed_runner_lambda_exports = {};
+__export(delete_failed_runner_lambda_exports, {
   handler: () => handler2
 });
-module.exports = __toCommonJS(token_retriever_lambda_exports);
+module.exports = __toCommonJS(delete_failed_runner_lambda_exports);
 
 // src/lambda-github.ts
 var import_crypto2 = require("crypto");
@@ -5423,150 +5423,103 @@ async function getOctokit(installationId) {
     githubSecrets
   };
 }
+async function getRunner(octokit, runnerLevel, owner, repo, name) {
+  let page = 1;
+  while (true) {
+    let runners;
+    if ((runnerLevel ?? "repo") === "repo") {
+      runners = await octokit.rest.actions.listSelfHostedRunnersForRepo({
+        name,
+        page,
+        owner,
+        repo
+      });
+    } else {
+      runners = await octokit.rest.actions.listSelfHostedRunnersForOrg({
+        name,
+        page,
+        org: owner
+      });
+    }
+    if (runners.data.runners.length == 0) {
+      return;
+    }
+    for (const runner of runners.data.runners) {
+      if (runner.name == name) {
+        return runner;
+      }
+    }
+    page++;
+  }
+}
+async function deleteRunner(octokit, runnerLevel, owner, repo, runnerId) {
+  if ((runnerLevel ?? "repo") === "repo") {
+    await octokit.rest.actions.deleteSelfHostedRunnerFromRepo({
+      owner,
+      repo,
+      runner_id: runnerId
+    });
+  } else {
+    await octokit.rest.actions.deleteSelfHostedRunnerFromOrg({
+      org: owner,
+      runner_id: runnerId
+    });
+  }
+}
 
-// src/token-retriever.lambda.ts
-var RunnerTokenError = class _RunnerTokenError extends Error {
+// src/delete-failed-runner.lambda.ts
+var RunnerBusy = class _RunnerBusy extends Error {
   constructor(msg) {
     super(msg);
-    this.name = "RunnerTokenError";
-    Object.setPrototypeOf(this, _RunnerTokenError.prototype);
+    this.name = "RunnerBusy";
+    Object.setPrototypeOf(this, _RunnerBusy.prototype);
+  }
+};
+var ReraisedError = class _ReraisedError extends Error {
+  constructor(event) {
+    super(event.error.Cause);
+    this.name = event.error.Error;
+    this.message = event.error.Cause;
+    Object.setPrototypeOf(this, _ReraisedError.prototype);
   }
 };
 async function handler2(event) {
-  try {
-    const {
-      githubSecrets,
-      octokit
-    } = await getOctokit(event.installationId);
-    if (event.jobId) {
-      const jobStatus = await checkJobStatus(octokit, event.owner, event.repo, event.jobId);
-      if (jobStatus !== "queued") {
-        console.log({
-          notice: "Job is no longer queued, skipping runner creation",
-          jobId: event.jobId,
-          jobStatus,
-          owner: event.owner,
-          repo: event.repo
-        });
-        return {
-          domain: githubSecrets.domain,
-          skip: true,
-          token: "",
-          registrationUrl: "",
-          jitConfig: "",
-          runnerId: 0
-        };
-      }
-    }
-    if (event.jobId) {
-      const jitResult = await getJitConfig(octokit, githubSecrets.runnerLevel, event.owner, event.repo, event.runnerName, event.labels, event.jobId);
-      return {
-        domain: githubSecrets.domain,
-        jitConfig: jitResult.encodedJitConfig,
-        runnerId: jitResult.runnerId,
-        skip: false,
-        token: "",
-        registrationUrl: ""
-      };
-    }
-    let token;
-    let registrationUrl;
-    if (githubSecrets.runnerLevel === "repo" || githubSecrets.runnerLevel === void 0) {
-      token = await getRegistrationTokenForRepo(octokit, event.owner, event.repo);
-      registrationUrl = `https://${githubSecrets.domain}/${event.owner}/${event.repo}`;
-    } else if (githubSecrets.runnerLevel === "org") {
-      token = await getRegistrationTokenForOrg(octokit, event.owner);
-      registrationUrl = `https://${githubSecrets.domain}/${event.owner}`;
-    } else {
-      throw new RunnerTokenError("Invalid runner level");
-    }
-    return {
-      domain: githubSecrets.domain,
-      token,
-      registrationUrl,
-      jitConfig: "",
-      runnerId: 0,
-      skip: false
-    };
-  } catch (error) {
+  const { octokit, githubSecrets } = await getOctokit(event.installationId);
+  const runner = await getRunner(octokit, githubSecrets.runnerLevel, event.owner, event.repo, event.runnerName);
+  if (!runner) {
     console.error({
-      notice: "Failed to retrieve runner registration token",
+      notice: "Unable to find runner id",
       owner: event.owner,
       repo: event.repo,
-      runnerName: event.runnerName,
-      jobId: event.jobId,
-      error: `${error}`
+      runnerName: event.runnerName
     });
-    throw new RunnerTokenError(error.message);
-  }
-}
-function ensureDefaultLabels(labels) {
-  const defaultLabels = ["self-hosted"];
-  const lowerLabels = labels.map((l) => l.toLowerCase());
-  for (const dl of defaultLabels) {
-    if (!lowerLabels.includes(dl.toLowerCase())) {
-      labels.unshift(dl);
-    }
-  }
-  return labels;
-}
-async function checkJobStatus(octokit, owner, repo, jobId) {
-  const response = await octokit.rest.actions.getJobForWorkflowRun({
-    owner,
-    repo,
-    job_id: jobId
-  });
-  return response.data.status;
-}
-async function getJitConfig(octokit, runnerLevel, owner, repo, runnerName, labels, jobId) {
-  const runnerGroupId = 1;
-  const epochSeconds = Math.floor(Date.now() / 1e3);
-  const labelsWithStarted = [
-    ...Array.isArray(labels) ? labels : labels.split(","),
-    `cdkghr:started:${epochSeconds}`
-  ];
-  const body = {
-    name: runnerName,
-    runner_group_id: runnerGroupId,
-    labels: ensureDefaultLabels(labelsWithStarted.map((l) => l.trim()).filter((l) => l.length > 0)),
-    work_folder: "_work"
-  };
-  let response;
-  if ((runnerLevel ?? "repo") === "repo") {
-    response = await octokit.request("POST /repos/{owner}/{repo}/actions/runners/generate-jitconfig", {
-      owner,
-      repo,
-      ...body
-    });
-  } else {
-    response = await octokit.request("POST /orgs/{org}/actions/runners/generate-jitconfig", {
-      org: owner,
-      ...body
-    });
+    throw new ReraisedError(event);
   }
   console.log({
-    notice: "Generated JIT runner config",
-    runnerId: response.data.runner.id,
-    runnerName: response.data.runner.name,
-    jobId
+    notice: "Found runner id",
+    runnerName: event.runnerName,
+    runnerId: runner.id,
+    owner: event.owner,
+    repo: event.repo
   });
-  return {
-    encodedJitConfig: response.data.encoded_jit_config,
-    runnerId: response.data.runner.id
-  };
-}
-async function getRegistrationTokenForOrg(octokit, owner) {
-  const response = await octokit.rest.actions.createRegistrationTokenForOrg({
-    org: owner
-  });
-  return response.data.token;
-}
-async function getRegistrationTokenForRepo(octokit, owner, repo) {
-  const response = await octokit.rest.actions.createRegistrationTokenForRepo({
-    owner,
-    repo
-  });
-  return response.data.token;
+  try {
+    await deleteRunner(octokit, githubSecrets.runnerLevel, event.owner, event.repo, runner.id);
+  } catch (e) {
+    const reqError = e;
+    if (reqError.message.includes("is still running a job")) {
+      throw new RunnerBusy(reqError.message);
+    } else {
+      console.error({
+        notice: "Unable to delete runner",
+        owner: event.owner,
+        repo: event.repo,
+        runnerId: runner.id,
+        runnerName: event.runnerName,
+        error: e
+      });
+    }
+  }
+  throw new ReraisedError(event);
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {

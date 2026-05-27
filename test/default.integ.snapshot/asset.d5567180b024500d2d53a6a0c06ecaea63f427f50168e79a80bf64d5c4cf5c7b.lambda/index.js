@@ -5520,15 +5520,10 @@ async function checkJobStatus(octokit, owner, repo, jobId) {
 }
 async function getJitConfig(octokit, runnerLevel, owner, repo, runnerName, labels, jobId) {
   const runnerGroupId = 1;
-  const epochSeconds = Math.floor(Date.now() / 1e3);
-  const labelsWithStarted = [
-    ...Array.isArray(labels) ? labels : labels.split(","),
-    `cdkghr:started:${epochSeconds}`
-  ];
   const body = {
     name: runnerName,
     runner_group_id: runnerGroupId,
-    labels: ensureDefaultLabels(labelsWithStarted.map((l) => l.trim()).filter((l) => l.length > 0)),
+    labels: ensureDefaultLabels((Array.isArray(labels) ? labels : labels.split(",")).map((l) => l.trim()).filter((l) => l.length > 0)),
     work_folder: "_work"
   };
   let response;
