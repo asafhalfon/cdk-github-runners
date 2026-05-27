@@ -73,8 +73,10 @@ heartbeat () {
       aws stepfunctions send-task-failure --task-token "$TASK_TOKEN" --error SpotInterrupted --cause "EC2 Spot instance interruption: $SPOT_ACTION" || true
       exit 0
     fi
-    if ! aws stepfunctions send-task-heartbeat --task-token "$TASK_TOKEN" 2>>/var/log/runner.log; then
-      echo "[$(date -Iseconds)] heartbeat send-task-heartbeat failed (exit $?)" >>/var/log/runner.log
+    aws stepfunctions send-task-heartbeat --task-token "$TASK_TOKEN" 2>>/var/log/runner.log
+    HEARTBEAT_RC=$?
+    if [ $HEARTBEAT_RC -ne 0 ]; then
+      echo "[$(date -Iseconds)] heartbeat send-task-heartbeat failed (exit $HEARTBEAT_RC)" >>/var/log/runner.log
     fi
     sleep 60
   done
