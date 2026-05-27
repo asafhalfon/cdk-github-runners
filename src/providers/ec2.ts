@@ -55,6 +55,15 @@ defaultLabels="{}"
 jitConfig="{}"
 
 export AWS_RETRY_MODE=standard # better retry
+
+# Resolve AWS region via IMDSv2 so heartbeat/send-task-success calls don't depend
+# on IMDS being reachable on each invocation (Docker iptables, transient issues).
+# Fall back to us-east-1 if IMDS is unavailable at boot — runners are deployed there.
+IMDS_TOKEN=$(curl -s -X PUT -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" \
+  http://169.254.169.254/latest/api/token 2>/dev/null || echo "")
+export AWS_DEFAULT_REGION=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" \
+  http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null || echo "us-east-1")
+
 touch /var/log/runner.log
 
 heartbeat () {
@@ -64,7 +73,9 @@ heartbeat () {
       aws stepfunctions send-task-failure --task-token "$TASK_TOKEN" --error SpotInterrupted --cause "EC2 Spot instance interruption: $SPOT_ACTION" || true
       exit 0
     fi
-    aws stepfunctions send-task-heartbeat --task-token "$TASK_TOKEN"
+    if ! aws stepfunctions send-task-heartbeat --task-token "$TASK_TOKEN" 2>>/var/log/runner.log; then
+      echo "[$(date -Iseconds)] heartbeat send-task-heartbeat failed (exit $?)" >>/var/log/runner.log
+    fi
     sleep 60
   done
 }
@@ -147,6 +158,16 @@ $jitConfig="{}"
 
 $Env:AWS_RETRY_MODE = "standard"  # better retry
 
+# Resolve AWS region via IMDSv2 so heartbeat/send-task-success calls don't depend
+# on IMDS being reachable on each invocation (Docker iptables, transient issues).
+# Fall back to us-east-1 if IMDS is unavailable at boot.
+try {
+  $imdsToken = Invoke-RestMethod -Method PUT -Uri "http://169.254.169.254/latest/api/token" -Headers @{"X-aws-ec2-metadata-token-ttl-seconds"="21600"} -TimeoutSec 5
+  $Env:AWS_DEFAULT_REGION = Invoke-RestMethod -Uri "http://169.254.169.254/latest/meta-data/placement/region" -Headers @{"X-aws-ec2-metadata-token"=$imdsToken} -TimeoutSec 5
+} catch {
+  $Env:AWS_DEFAULT_REGION = "us-east-1"
+}
+
 # EC2Launch only starts ssm agent after user data is done, so we need to start it ourselves (it is disabled by default)
 Set-Service -StartupType Manual AmazonSSMAgent
 Start-Service AmazonSSMAgent
@@ -161,7 +182,11 @@ Start-Job -ScriptBlock {
       break
     } catch {
     }
-    aws stepfunctions send-task-heartbeat --task-token "$using:TASK_TOKEN"
+    $heartbeatResult = aws stepfunctions send-task-heartbeat --task-token "$using:TASK_TOKEN" 2>&1
+    if ($LASTEXITCODE -ne 0) {
+      $timestamp = (Get-Date -Format "yyyy-MM-ddTHH:mm:ssK")
+      "[$timestamp] heartbeat send-task-heartbeat failed (exit $LASTEXITCODE): $heartbeatResult" | Out-File -Encoding ASCII -Append /actions/runner.log
+    }
     Start-Sleep -Seconds 60
   }
 }

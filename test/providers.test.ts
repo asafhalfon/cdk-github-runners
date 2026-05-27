@@ -447,5 +447,20 @@ describe('Providers', () => {
       const sm = template.findResources('AWS::StepFunctions::StateMachine');
       expect(JSON.stringify(sm)).toContain('\\"HeartbeatSeconds\\":600');
     });
+
+    test('Ec2RunnerProvider Linux userdata resolves AWS_DEFAULT_REGION from IMDSv2', () => {
+      const testStack = new cdk.Stack();
+      const vpc = new ec2.Vpc(testStack, 'Vpc');
+      new GitHubRunners(testStack, 'Runners', {
+        providers: [new Ec2RunnerProvider(testStack, 'Ec2', { vpc })],
+      });
+      const template = Template.fromStack(testStack);
+      const sm = template.findResources('AWS::StepFunctions::StateMachine');
+      const smStr = JSON.stringify(sm);
+      // Region resolution block should be present in the Linux userdata template
+      expect(smStr).toContain('AWS_DEFAULT_REGION=$(curl');
+      // Heartbeat error-handling should log failures to CloudWatch-captured log file
+      expect(smStr).toContain('heartbeat send-task-heartbeat failed');
+    });
   });
 });
