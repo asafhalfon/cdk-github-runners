@@ -135,10 +135,18 @@ async function getJitConfig(
 ): Promise<{ encodedJitConfig: string; runnerId: number }> {
   const runnerGroupId = 1; // Default runner group
 
+  // Inject cdkghr:started:<epoch> so the idle-runner-reaper Lambda can compute
+  // idle duration for JIT runners, matching the legacy config.sh path behaviour.
+  const epochSeconds = Math.floor(Date.now() / 1000);
+  const labelsWithStarted = [
+    ...(Array.isArray(labels) ? labels : (labels as unknown as string).split(',')),
+    `cdkghr:started:${epochSeconds}`,
+  ];
+
   const body = {
     name: runnerName,
     runner_group_id: runnerGroupId,
-    labels: ensureDefaultLabels((Array.isArray(labels) ? labels : (labels as unknown as string).split(',')).map((l: string) => l.trim()).filter((l: string) => l.length > 0)),
+    labels: ensureDefaultLabels(labelsWithStarted.map((l: string) => l.trim()).filter((l: string) => l.length > 0)),
     work_folder: '_work',
   };
 
