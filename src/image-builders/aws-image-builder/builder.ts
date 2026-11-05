@@ -212,11 +212,14 @@ export class ImageBuilderComponent extends cdk.Resource {
         }
       }
 
-      steps.push({
-        name: 'Download',
-        action: 'S3Download',
-        inputs,
-      });
+      // AWS Image Builder now rejects an S3Download step with no inputs ("Action S3Download has no inputs")
+      if (inputs.length > 0) {
+        steps.push({
+          name: 'Download',
+          action: 'S3Download',
+          inputs,
+        });
+      }
 
       if (extractCommands.length > 0) {
         steps.push({
