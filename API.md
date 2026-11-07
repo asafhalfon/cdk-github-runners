@@ -6664,6 +6664,7 @@ const ec2RunnerProviderProps: Ec2RunnerProviderProps = { ... }
 | <code><a href="#@cloudsnorkel/cdk-github-runners.Ec2RunnerProviderProps.property.retryOptions">retryOptions</a></code> | <code><a href="#@cloudsnorkel/cdk-github-runners.ProviderRetryOptions">ProviderRetryOptions</a></code> | *No description.* |
 | <code><a href="#@cloudsnorkel/cdk-github-runners.Ec2RunnerProviderProps.property.amiBuilder">amiBuilder</a></code> | <code><a href="#@cloudsnorkel/cdk-github-runners.IRunnerImageBuilder">IRunnerImageBuilder</a></code> | *No description.* |
 | <code><a href="#@cloudsnorkel/cdk-github-runners.Ec2RunnerProviderProps.property.group">group</a></code> | <code>string</code> | GitHub Actions runner group name. |
+| <code><a href="#@cloudsnorkel/cdk-github-runners.Ec2RunnerProviderProps.property.heartbeatTimeout">heartbeatTimeout</a></code> | <code>aws-cdk-lib.Duration</code> | Maximum time the Step Functions task waits between heartbeats from the runner instance before it considers the runner stuck and fails the task. |
 | <code><a href="#@cloudsnorkel/cdk-github-runners.Ec2RunnerProviderProps.property.imageBuilder">imageBuilder</a></code> | <code><a href="#@cloudsnorkel/cdk-github-runners.IRunnerImageBuilder">IRunnerImageBuilder</a></code> | Runner image builder used to build AMI containing GitHub Runner and all requirements. |
 | <code><a href="#@cloudsnorkel/cdk-github-runners.Ec2RunnerProviderProps.property.instanceType">instanceType</a></code> | <code>aws-cdk-lib.aws_ec2.InstanceType</code> | Instance type for launched runner instances. |
 | <code><a href="#@cloudsnorkel/cdk-github-runners.Ec2RunnerProviderProps.property.labels">labels</a></code> | <code>string[]</code> | GitHub Actions labels used for this provider. |
@@ -6753,6 +6754,22 @@ requires a paid GitHub account and organization level runner registration.
 The group must exist or the runner will not start.
 
 Users will still be able to trigger this runner with the correct labels. But the runner will only be able to run jobs from repos allowed to use the group.
+
+---
+
+##### `heartbeatTimeout`<sup>Optional</sup> <a name="heartbeatTimeout" id="@cloudsnorkel/cdk-github-runners.Ec2RunnerProviderProps.property.heartbeatTimeout"></a>
+
+```typescript
+public readonly heartbeatTimeout: Duration;
+```
+
+- *Type:* aws-cdk-lib.Duration
+- *Default:* Duration.minutes(10)
+
+Maximum time the Step Functions task waits between heartbeats from the runner instance before it considers the runner stuck and fails the task.
+
+Raise this if your instances can go longer than the default without a heartbeat, for example during long snapshot
+deploys or heavy fixture setup.
 
 ---
 

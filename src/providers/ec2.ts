@@ -50,6 +50,13 @@ export ACTIONS_RUNNER_INPUT_JITCONFIG="{}" # run.sh reads --jitconfig from here 
 labels="{}"
 
 export AWS_RETRY_MODE=standard # better retry
+
+# resolve the region once at boot, so heartbeats and send-task-* don't depend on IMDS being reachable on every call
+# (docker iptables or a transient IMDS failure made every later aws call fail with "You must specify a region")
+IMDS_TOKEN=$(curl -s -f -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null) || true
+IMDS_REGION=$(curl -s -f -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" "http://169.254.169.254/latest/meta-data/placement/region" 2>/dev/null) || true
+if [ -n "$IMDS_REGION" ]; then export AWS_DEFAULT_REGION="$IMDS_REGION"; fi
+
 touch /var/log/runner.log
 
 heartbeat () {
@@ -59,7 +66,11 @@ heartbeat () {
       aws stepfunctions send-task-failure --task-token file:///tmp/task-token --error SpotInterrupted --cause "EC2 Spot instance interruption: $SPOT_ACTION" || true
       exit 0
     fi
-    aws stepfunctions send-task-heartbeat --task-token file:///tmp/task-token
+    aws stepfunctions send-task-heartbeat --task-token file:///tmp/task-token 2>>/var/log/runner.log
+    HEARTBEAT_RC=$?
+    if [ $HEARTBEAT_RC -ne 0 ]; then
+      echo "[$(date -Iseconds)] heartbeat send-task-heartbeat failed (exit $HEARTBEAT_RC)" >>/var/log/runner.log
+    fi
     sleep 60
   done
 }
@@ -132,6 +143,13 @@ $jitConfig="{}"
 $labels="{}"
 
 $Env:AWS_RETRY_MODE = "standard"  # better retry
+
+# resolve the region once at boot, so aws calls don't depend on IMDS being reachable every time
+try {
+  $imdsToken = Invoke-RestMethod -Method PUT -Uri "http://169.254.169.254/latest/api/token" -Headers @{"X-aws-ec2-metadata-token-ttl-seconds"="21600"} -TimeoutSec 5
+  $Env:AWS_DEFAULT_REGION = Invoke-RestMethod -Uri "http://169.254.169.254/latest/meta-data/placement/region" -Headers @{"X-aws-ec2-metadata-token"=$imdsToken} -TimeoutSec 5
+} catch {
+}
 
 # EC2Launch only starts ssm agent after user data is done, so we need to start it ourselves (it is disabled by default)
 Set-Service -StartupType Manual AmazonSSMAgent
@@ -339,6 +357,17 @@ export interface Ec2RunnerProviderProps extends RunnerProviderProps {
   readonly spotMaxPrice?: string;
 
   /**
+   * Maximum time the Step Functions task waits between heartbeats from the runner instance before it considers the
+   * runner stuck and fails the task.
+   *
+   * Raise this if your instances can go longer than the default without a heartbeat, for example during long snapshot
+   * deploys or heavy fixture setup.
+   *
+   * @default Duration.minutes(10)
+   */
+  readonly heartbeatTimeout?: cdk.Duration;
+
+  /**
    * Additional tags to apply to launched runner instances and their volumes.
    *
    * These additional tags are set on top of `Name`, `GitHubRunners:Provider`, `GitHubRunners:Repo`, and `GitHubRunners:Labels`, and
@@ -365,6 +394,7 @@ interface Ec2RunnerConfig extends RunnerConfig {
   readonly instanceMarketOptions: any;
   readonly userDataTemplateIdx: number;
   readonly subnet: string;
+  readonly heartbeatSeconds: number;
 }
 
 /**
@@ -404,7 +434,7 @@ export class Ec2RunnerProvider extends BaseProvider implements IRunnerProvider, 
       stateJson: {
         Type: 'Task',
         Resource: `arn:${cdk.Aws.PARTITION}:states:::aws-sdk:ec2:runInstances.waitForTaskToken`,
-        HeartbeatSeconds: cdk.Duration.minutes(10).toSeconds(),
+        HeartbeatSecondsPath: p('heartbeatSeconds'),
         Parameters: {
           'LaunchTemplate': {
             'LaunchTemplateId.$': p('launchTemplateId'),
@@ -501,6 +531,7 @@ export class Ec2RunnerProvider extends BaseProvider implements IRunnerProvider, 
   private readonly storageOptions?: StorageOptions;
   private readonly spot: boolean;
   private readonly spotMaxPrice: string | undefined;
+  private readonly heartbeatTimeout: cdk.Duration;
   private readonly vpc: ec2.IVpc;
   private readonly subnets: ec2.ISubnet[];
   private readonly securityGroups: ec2.ISecurityGroup[];
@@ -522,6 +553,7 @@ export class Ec2RunnerProvider extends BaseProvider implements IRunnerProvider, 
     this.storageOptions = props?.storageOptions;
     this.spot = props?.spot ?? false;
     this.spotMaxPrice = props?.spotMaxPrice;
+    this.heartbeatTimeout = props?.heartbeatTimeout ?? cdk.Duration.minutes(10);
     this.defaultLabels = props?.defaultLabels ?? true;
     this.tags = props?.tags ?? {};
 
@@ -675,6 +707,7 @@ export class Ec2RunnerProvider extends BaseProvider implements IRunnerProvider, 
       // see selectProviderParams() in runner.ts, which merges them in at runtime
       tags: Object.entries(this.tags).map(([Key, Value]) => ({ Key, Value })),
       runnerGroup: this.group ?? '',
+      heartbeatSeconds: this.heartbeatTimeout.toSeconds(),
       defaultLabels: runnerDefaultLabels(this.ami.os, this.ami.architecture, this.defaultLabels),
     };
 

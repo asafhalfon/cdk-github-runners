@@ -661,6 +661,34 @@ describe('Providers', () => {
       // missing reference path fails the state at runtime
       expect((provider as any)._runnerConfig().tags).toEqual([]);
     });
+
+    test('heartbeat timeout defaults to 10 minutes and can be raised', () => {
+      const vpc = new ec2.Vpc(stack, 'vpc');
+      const sg = new ec2.SecurityGroup(stack, 'sg', { vpc });
+
+      const defaultProvider = new Ec2RunnerProvider(stack, 'provider heartbeat default', {
+        vpc,
+        securityGroups: [sg],
+        labels: ['ec2-heartbeat-default'],
+      });
+      const longProvider = new Ec2RunnerProvider(stack, 'provider heartbeat long', {
+        vpc,
+        securityGroups: [sg],
+        labels: ['ec2-heartbeat-long'],
+        heartbeatTimeout: cdk.Duration.minutes(30),
+      });
+
+      expect((defaultProvider as any)._runnerConfig().heartbeatSeconds).toBe(600);
+      expect((longProvider as any)._runnerConfig().heartbeatSeconds).toBe(1800);
+    });
+
+    test('state machine reads the heartbeat timeout from the provider params', () => {
+      const fragment = (Ec2RunnerProvider as any)._stateMachineFragment(stack);
+      const state = fragment.toStateJson();
+
+      expect(state.HeartbeatSecondsPath).toBe('$.providerParams.heartbeatSeconds');
+      expect(state.HeartbeatSeconds).toBeUndefined();
+    });
   });
 
   test('root device resolution re-runs when the AMI recipe changes (issue #962)', () => {
