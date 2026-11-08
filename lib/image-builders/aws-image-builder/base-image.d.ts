@@ -1,0 +1,131 @@
+import * as ecr from 'aws-cdk-lib/aws-ecr';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
+import { Construct } from 'constructs';
+import { Architecture, Os } from '../../providers';
+/**
+ * Type that can be used to specify a base image - either a string (deprecated) or a BaseImage object.
+ *
+ * To create a BaseImage object, use the static factory methods like BaseImage.fromAmiId().
+ *
+ * Note: String support is deprecated and will be removed in a future version. Use BaseImage static factory methods instead.
+ */
+export type BaseImageInput = string | BaseImage;
+/**
+ * Represents a base image that is used to start from in EC2 Image Builder image builds.
+ *
+ * This class is adapted from AWS CDK's BaseImage class to support both string and object inputs.
+ */
+export declare class BaseImage {
+    /**
+     * The AMI ID to use as a base image in an image recipe
+     *
+     * @param amiId The AMI ID to use as the base image
+     */
+    static fromAmiId(amiId: string): BaseImage;
+    /**
+     * An AWS-provided EC2 Image Builder image to use as a base image in an image recipe.
+     *
+     * This constructs an Image Builder ARN for AWS-provided images like `ubuntu-server-22-lts-x86/x.x.x`.
+     *
+     * @param scope The construct scope (used to determine the stack and region)
+     * @param resourceName The Image Builder resource name pattern (e.g., `ubuntu-server-22-lts-x86` or `ubuntu-server-22-lts-${arch}`)
+     * @param version The version pattern (defaults to `x.x.x` to use the latest version)
+     */
+    static fromImageBuilder(scope: Construct, resourceName: string, version?: string): BaseImage;
+    /**
+     * The marketplace product ID for an AMI product to use as the base image in an image recipe
+     *
+     * @param productId The Marketplace AMI product ID to use as the base image
+     */
+    static fromMarketplaceProductId(productId: string): BaseImage;
+    /**
+     * The SSM parameter to use as the base image in an image recipe
+     *
+     * @param parameter The SSM parameter to use as the base image
+     */
+    static fromSsmParameter(parameter: ssm.IParameter): BaseImage;
+    /**
+     * The parameter name for the SSM parameter to use as the base image in an image recipe
+     *
+     * @param parameterName The name of the SSM parameter to use as the base image
+     */
+    static fromSsmParameterName(parameterName: string): BaseImage;
+    /**
+     * The direct string value of the base image to use in an image recipe. This can be an EC2 Image Builder image ARN,
+     * an SSM parameter, an AWS Marketplace product ID, or an AMI ID.
+     *
+     * @param baseImageString The base image as a direct string value
+     */
+    static fromString(baseImageString: string): BaseImage;
+    /**
+     * A base AMI with NVIDIA drivers pre-installed for GPU workloads.
+     *
+     * Uses AWS Deep Learning AMIs for Linux (Ubuntu, Amazon Linux 2, Amazon Linux 2023).
+     * For Windows, subscribe to NVIDIA RTX Virtual Workstation in AWS Marketplace, then use
+     * {@link fromMarketplaceProductId} with the product ID.
+     *
+     * @param os Target operating system
+     * @param architecture Target architecture
+     * @throws Error if the OS/architecture combo has no GPU base AMI
+     */
+    static fromGpuBase(os: Os, architecture: Architecture): BaseImage;
+    /**
+     * The rendered base image to use
+     */
+    readonly image: string;
+    protected constructor(image: string);
+}
+/**
+ * Type that can be used to specify a base container image - either a string (deprecated) or a BaseContainerImage object.
+ *
+ * To create a BaseContainerImage object, use the static factory methods like BaseContainerImage.fromEcr().
+ *
+ * Note: String support is deprecated and will be removed in a future version. Use BaseContainerImage static factory methods instead.
+ */
+export type BaseContainerImageInput = string | BaseContainerImage;
+/**
+ * Represents a base container image that is used to start from in EC2 Image Builder container builds.
+ *
+ * This class is adapted from AWS CDK's BaseContainerImage class to support both string and object inputs.
+ */
+export declare class BaseContainerImage {
+    /**
+     * The DockerHub image to use as the base image in a container recipe
+     *
+     * @param repository The DockerHub repository where the base image resides in
+     * @param tag The tag of the base image in the DockerHub repository
+     */
+    static fromDockerHub(repository: string, tag: string): BaseContainerImage;
+    /**
+     * The ECR container image to use as the base image in a container recipe
+     *
+     * @param repository The ECR repository where the base image resides in
+     * @param tag The tag of the base image in the ECR repository
+     */
+    static fromEcr(repository: ecr.IRepository, tag: string): BaseContainerImage;
+    /**
+     * The ECR public container image to use as the base image in a container recipe
+     *
+     * @param registryAlias The alias of the ECR public registry where the base image resides in
+     * @param repositoryName The name of the ECR public repository, where the base image resides in
+     * @param tag The tag of the base image in the ECR public repository
+     */
+    static fromEcrPublic(registryAlias: string, repositoryName: string, tag: string): BaseContainerImage;
+    /**
+     * The string value of the base image to use in a container recipe. This can be an EC2 Image Builder image ARN,
+     * an ECR or ECR public image, or a container URI sourced from a third-party container registry such as DockerHub.
+     *
+     * @param baseContainerImageString The base image as a direct string value
+     */
+    static fromString(baseContainerImageString: string): BaseContainerImage;
+    /**
+     * The rendered base image to use
+     */
+    readonly image: string;
+    /**
+     * The ECR repository if this image was created from an ECR repository.
+     * This allows automatic permission granting for CodeBuild.
+     */
+    readonly ecrRepository?: ecr.IRepository;
+    protected constructor(image: string, ecrRepository?: ecr.IRepository);
+}

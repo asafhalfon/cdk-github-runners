@@ -1,0 +1,80 @@
+/**
+ * Maximum length of a runner name. We use the runner name as the step function execution name which is limited to 80 characters.
+ * But GitHub runner names are limited to 64 characters, so we use that as the maximum length for the runner name.
+ *
+ * @internal
+ */
+export declare const MAX_RUNNER_NAME_LENGTH = 64;
+/**
+ * Job id used for warm runners, which aren't started for any job in particular.
+ *
+ * @internal
+ */
+export declare const WARM_RUNNER_JOB_ID = -1;
+/**
+ * @internal
+ */
+export declare enum ReservedTags {
+    /**
+     * Common prefix for all tags we use.
+     */
+    PREFIX = "GitHubRunners:",
+    /**
+     * Tag holding the CloudFormation stack name. Helps limit IAM permissions to just resources launched/created by our stack.
+     */
+    STACK = "GitHubRunners:Stack",
+    /**
+     * Tag holding the provider name.
+     */
+    PROVIDER = "GitHubRunners:Provider",
+    /**
+     * Tag holding the runner labels.
+     */
+    LABELS = "GitHubRunners:Labels",
+    /**
+     * Tag holding the runner name, which is also the step function execution name. One execution can launch many instances over its retries and subnet
+     * fallbacks, and they all carry the same value.
+     */
+    RUNNER = "GitHubRunners:Runner",
+    /**
+     * Tag holding the GitHub owner name (e.g. CloudSnorkel/cdk-github-runners).
+     */
+    REPO = "GitHubRunners:Repo"
+}
+/**
+ * Private key secret value we deploy with. The user is meant to replace it with a real key, and a runner that gets
+ * this far with the placeholder still in place was never set up.
+ *
+ * @internal
+ */
+export declare const GITHUB_PRIVATE_KEY_PLACEHOLDER = "-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----";
+/**
+ * Path of the providers file in the webhook handler layer. It's a layer and not an environment variable because all
+ * environment variables of a function are limited to 4kb together, and users with many providers go over that.
+ *
+ * @internal
+ */
+export declare const PROVIDERS_PATH = "/opt/providers.json";
+/**
+ * Can a runner with these labels run a job asking for these labels? Every label the job requires must be on the runner.
+ *
+ * @internal
+ */
+export declare function labelsMatch(jobLabels: string[], runnerLabels: string[]): boolean;
+/**
+ * Input for the runner orchestrator step function. Read back from the step function itself when a runner needs
+ * replacing, so it never has to be stored anywhere else.
+ *
+ * @internal
+ */
+export interface OrchestratorInput {
+    readonly owner: string;
+    readonly repo: string;
+    readonly jobId: number;
+    readonly jobUrl: string;
+    readonly installationId: number;
+    readonly jobLabels: string;
+    readonly provider: string;
+    readonly labels: string;
+    readonly maxIdleSeconds: number;
+}

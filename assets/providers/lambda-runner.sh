@@ -1,0 +1,50 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# workaround for "Cannot get required symbol EVP_rc2_cbc from libssl"
+# lambda docker image for node.js comes with stripped down libssl.so pushed in LD_LIBRARY_PATH
+if [ -f /var/lang/lib/libssl.so ]; then
+  export LD_LIBRARY_PATH=/usr/lib64:$LD_LIBRARY_PATH
+fi
+
+# extract parameters
+RUNNER_JIT_CONFIG=$(echo "$1" | jq -r '.jitConfig // empty')
+RUNNER_NAME=$(echo "$1" | jq -r .runnerName)
+RUNNER_LABEL=$(echo "$1" | jq -r .label)
+OWNER=$(echo "$1" | jq -r .owner)
+REPO=$(echo "$1" | jq -r .repo)
+GITHUB_DOMAIN=$(echo "$1" | jq -r .githubDomain)
+
+# copy runner code (it needs a writable directory)
+cp -r /home/runner /tmp/
+cd /tmp/runner
+
+# setup home directory
+mkdir /tmp/home
+export HOME=/tmp/home
+
+# check for stolen runners
+./job-reporter.sh "${RUNNER_NAME}"
+
+# start runner
+if [ -n "${RUNNER_JIT_CONFIG}" ]; then
+  ./run.sh --jitconfig "${RUNNER_JIT_CONFIG}"
+else
+  # DEPRECATED: remove in 1.0.0 with this whole else branch. executions that started before JIT runners pass a registration token instead.
+  RUNNER_TOKEN=$(echo "$1" | jq -r .token)
+  REGISTRATION_URL=$(echo "$1" | jq -r .registrationUrl)
+  RUNNER_GROUP=$(echo "$1" | jq -r .group)
+  DEFAULT_LABELS=$(echo "$1" | jq -r .defaultLabels)
+  if [ "${RUNNER_VERSION}" = "latest" ]; then RUNNER_FLAGS=""; else RUNNER_FLAGS="--disableupdate"; fi
+  ./config.sh --unattended --url "${REGISTRATION_URL}" --token "${RUNNER_TOKEN}" --ephemeral --work _work --labels "${RUNNER_LABEL},cdkghr:started:`date +%s`" --name "${RUNNER_NAME}" ${RUNNER_FLAGS} ${RUNNER_GROUP} ${DEFAULT_LABELS}
+  echo Config done
+  ./run.sh
+fi
+echo Run done
+
+# print status for metrics
+STATUS=$(grep -Phors "finish job request for job [0-9a-f\-]+ with result: \K.*" _diag/ | tail -n1)
+if [ -n "$STATUS" ]; then
+  echo CDKGHA JOB DONE "$RUNNER_LABEL" "$STATUS"
+fi
